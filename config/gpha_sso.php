@@ -1,0 +1,19 @@
+<?php
+return [
+    'issuer'=>env('GPHA_SSO_ISSUER','GPHACentralLogin'),
+    'audience'=>env('GPHA_SSO_AUDIENCE','EMS'),
+    'allowed_audiences'=>array_values(array_filter(array_map('trim',explode(',',env('GPHA_SSO_ALLOWED_AUDIENCES','EMS,CentralLogin'))))),
+    'module_id'=>env('GPHA_SSO_MODULE_ID'),
+    'app_id'=>env('GPHA_SSO_APP_ID','EMS'),
+    'app_key'=>env('GPHA_SSO_APP_KEY'),
+    'shared_secret'=>env('GPHA_SSO_SHARED_SECRET'),
+    'central_login_url'=>env('GPHA_SSO_CENTRAL_LOGIN_URL'),
+    'return_url'=>env('GPHA_SSO_RETURN_URL'),
+    'base_url'=>env('GPHA_SSO_BASE_URL'),
+    'permissions_endpoint'=>env('GPHA_SSO_APP_ACCESS_PERMISSIONS_ENDPOINT'),
+    'token_ttl_minutes'=>(int)env('GPHA_SSO_TOKEN_TTL_MINUTES',3),
+    'clock_skew_seconds'=>(int)env('GPHA_SSO_CLOCK_SKEW_SECONDS',30),
+    'permission_cache_seconds'=>(int)env('GPHA_SSO_PERMISSION_CACHE_SECONDS',120),
+    'connect_timeout_seconds'=>2,
+    'timeout_seconds'=>5,
+];

@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+[x-cloak] { display: none !important; }
+
+@layer base {
+    :root {
+        --color-gpha-primary: #00579b;
+        --color-gpha-primary-dark: #004c87;
+        --color-gpha-secondary: #f6b71b;
+    }
+    html { font-size: 17px; }
+    body { @apply bg-gpha-shell text-slate-800; font-family: "Nunito Sans", sans-serif; font-size: 1rem; line-height: 1.5; }
+    body :where(p, span, label, input, select, textarea, button, a, li, td, th) { font-family: "Nunito Sans", sans-serif; }
+    body :where(p, span, label, input, select, textarea, button, a, li) { font-size: 20px !important; line-height: 1.6; }
+    table :where(th, td), table :where(th, td) :where(a, button, input, select, textarea, span, p) { font-size: 18px !important; line-height: 1.5; }
+    table thead th, table thead th :where(span, a, button) { font-size: 18px !important; line-height: 1.3 !important; font-weight: 700 !important; text-transform: none !important; }
+    button:not(:disabled), [type='button']:not(:disabled), [type='submit']:not(:disabled), a.rounded, a.rounded-md, a.rounded-lg { transition: color 150ms ease-out, background-color 150ms ease-out, border-color 150ms ease-out, transform 150ms ease-out, box-shadow 150ms ease-out; }
+    button:not(:disabled):hover, [type='button']:not(:disabled):hover, [type='submit']:not(:disabled):hover, a.rounded:hover, a.rounded-md:hover, a.rounded-lg:hover { transform: translateY(-1px); box-shadow: 0 10px 22px rgba(15, 79, 143, 0.14); }
+    button:not(:disabled):active, [type='button']:not(:disabled):active, [type='submit']:not(:disabled):active { transform: scale(.98); }
+}
+
+@layer components {
+    .gpha-page-shell { @apply mx-auto w-full max-w-7xl px-4 py-4 sm:px-6 lg:px-8; }
+    .gpha-panel { @apply rounded-lg border border-slate-200 bg-white shadow-[0_16px_40px_rgba(15,79,143,0.07)]; }
+    .gpha-top-pipe { @apply relative overflow-hidden; }
+    .gpha-top-pipe::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 6px; background: var(--color-gpha-secondary); border-radius: 999px 999px 0 0; pointer-events: none; }
+    .gpha-button-primary { @apply inline-flex min-h-11 items-center justify-center gap-2 rounded bg-gpha-primary px-4 py-2.5 font-extrabold text-white shadow-sm transition hover:bg-gpha-primary-dark; font-size: 20px; }
+    .gpha-button-secondary { @apply inline-flex min-h-11 items-center justify-center gap-2 rounded border border-slate-300 bg-white px-4 py-2.5 font-extrabold text-slate-700 hover:border-gpha-primary hover:text-gpha-primary; font-size: 20px; }
+    .gpha-label { @apply mb-1.5 block font-bold text-slate-700; font-size: 18px; line-height: 1.35; }
+    .gpha-input { @apply block h-12 w-full rounded border-slate-300 bg-white shadow-sm focus:border-gpha-primary focus:ring-gpha-primary; font-size: 20px; }
+    textarea.gpha-input { height: auto; }
+    .gpha-table { @apply min-w-full divide-y divide-slate-200; }
+    .gpha-table thead { @apply bg-slate-50; }
+    .gpha-table th { @apply whitespace-nowrap px-4 py-3 text-left font-bold text-slate-600; }
+    .gpha-table td { @apply px-4 py-3 align-middle font-medium text-slate-700; }
+    .gpha-table tbody { @apply divide-y divide-slate-100; }
+    .gpha-metric { @apply relative overflow-hidden rounded-2xl border border-slate-200 bg-white p-5 shadow-sm; }
+    .gpha-metric::before { content: ""; @apply absolute inset-x-0 top-0 h-1 bg-gpha-secondary; }
+    .gpha-status { @apply inline-flex items-center rounded-full px-2.5 py-1 text-xs font-extrabold; }
+    .gpha-status-badge { font-size: 14px !important; line-height: 1.25 !important; padding: .25rem .7rem; text-transform: none !important; }
+    .gpha-actions-heading { @apply font-black tracking-wide text-slate-800; }
+    .gpha-actions-cell { @apply font-bold text-slate-800; }
+    .gpha-action-trigger { @apply inline-flex items-center justify-center rounded-full bg-gpha-primary p-0 text-white shadow-sm transition hover:bg-gpha-primary-dark; width: 44px; height: 44px; min-width: 44px; font-size: 0 !important; line-height: 0; }
+    .gpha-action-trigger svg { width: 24px; height: 24px; transition: transform 150ms ease; }
+    .gpha-action-trigger.is-open svg { transform: rotate(180deg); }
+    .gpha-floating-action-menu { @apply fixed z-[100] w-56 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-2xl ring-1 ring-slate-950/5; }
+    .gpha-floating-action-menu :is(a, button) { font-family: "Nunito Sans", sans-serif; font-size: 20px; line-height: 1.5; }
+    .gpha-brand-title, .gpha-brand-title span { font-size: 24px !important; line-height: 1.2 !important; }
+    .gpha-user-avatar { font-size: 20px !important; line-height: 1 !important; }
+    .gpha-user-name { font-size: 20px !important; line-height: 1.15 !important; }
+    .gpha-user-role { font-size: 14px !important; line-height: 1.25 !important; }
+    .gpha-chart-label { font-size: 14px !important; line-height: 1.2 !important; }
+    .gpha-help-text { font-size: 14px !important; line-height: 1.3 !important; }
+}

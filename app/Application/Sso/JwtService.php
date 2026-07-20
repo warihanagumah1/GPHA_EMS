@@ -1,0 +1,4 @@
+<?php
+namespace App\Application\Sso;
+use RuntimeException;
+class JwtService { public function decodeAndVerify(string $jwt,string $secret):array{$parts=explode('.',$jwt);if(count($parts)!==3)throw new RuntimeException('Invalid token format.');[$h,$p,$s]=$parts;$header=json_decode($this->decode($h),true);$payload=json_decode($this->decode($p),true);if(!is_array($header)||!is_array($payload))throw new RuntimeException('Invalid token payload.');if(($header['alg']??null)!=='HS256')throw new RuntimeException('Unsupported token algorithm.');$expected=hash_hmac('sha256',"$h.$p",$secret,true);if(!hash_equals($expected,$this->decode($s)))throw new RuntimeException('Invalid token signature.');return $payload;} private function decode(string $value):string{$value.=str_repeat('=',(4-strlen($value)%4)%4);$decoded=base64_decode(strtr($value,'-_','+/'),true);if($decoded===false)throw new RuntimeException('Invalid token encoding.');return $decoded;} }

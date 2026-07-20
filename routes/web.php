@@ -1,0 +1,37 @@
+<?php
+use App\Application\Sso\CentralLoginUrl;use App\Http\Controllers\EmsOperationsController;use App\Http\Controllers\Sso\SsoLoginController;use Illuminate\Http\Request;use Illuminate\Support\Facades\Route;
+Route::get('/',function(Request $request){if($request->filled('token'))return redirect()->route('sso.login',['token'=>$request->query('token')]);if(app()->environment('testing')&&!auth()->check())return view('welcome');return auth()->check()?redirect()->route('dashboard'):redirect()->away(app(CentralLoginUrl::class)->loginUrl());})->name('home');
+Route::get('/sso/login',SsoLoginController::class)->name('sso.login');Route::get('/sso/consume',SsoLoginController::class)->name('sso.consume');
+Route::get('/api/runtime-config',fn()=>response()->json(['centralLoginUrl'=>config('gpha_sso.central_login_url'),'ssoReturnUrl'=>app(CentralLoginUrl::class)->returnUrl()]))->name('runtime-config');
+Route::middleware(['auth','ems.access'])->group(function(){
+ Route::post('/branch',function(Request $request){$code=$request->validate(['branch_code'=>'required|string|max:40'])['branch_code'];abort_unless(in_array($code,(array)session('sso.branches.codes',[]),true),403);session(['sso.active_branch_code'=>$code]);return back();})->name('ems.branch.switch');
+ Route::get('/dashboard',[EmsOperationsController::class,'dashboard'])->name('dashboard');
+ Route::get('/ems/{module}',[EmsOperationsController::class,'index'])->middleware('ems.permission:Module,View')->name('ems.module');
+ Route::get('/ambulances',[EmsOperationsController::class,'index'])->defaults('module','ambulances')->middleware('ems.permission:AmbulanceFleet,View')->name('ems.ambulances');
+ Route::get('/dispatches',[EmsOperationsController::class,'index'])->defaults('module','dispatches')->middleware('ems.permission:DispatchAndMovement,View')->name('ems.dispatches');
+ Route::get('/operations/mileage',[EmsOperationsController::class,'index'])->defaults('module','mileage')->middleware('ems.permission:AmbulanceFleet,View')->name('ems.mileage');
+ Route::get('/operations/availability',[EmsOperationsController::class,'index'])->defaults('module','availability')->middleware('ems.permission:ReadinessAndActivities,View')->name('ems.availability');
+ Route::get('/operations/activities',[EmsOperationsController::class,'index'])->defaults('module','activities')->middleware('ems.permission:ReadinessAndActivities,View')->name('ems.activities');
+ Route::post('/ambulances',[EmsOperationsController::class,'storeAmbulance'])->middleware('ems.permission:AmbulanceFleet,Manage')->name('ems.ambulances.store');
+ Route::get('/ambulances/{ambulance:uuid}',[EmsOperationsController::class,'showAmbulance'])->middleware('ems.permission:AmbulanceFleet,View')->name('ems.ambulances.show');
+ Route::get('/ambulances/{ambulance:uuid}/edit',[EmsOperationsController::class,'editAmbulance'])->middleware('ems.permission:AmbulanceFleet,Manage')->name('ems.ambulances.edit');
+ Route::put('/ambulances/{ambulance:uuid}',[EmsOperationsController::class,'updateAmbulance'])->middleware('ems.permission:AmbulanceFleet,Manage')->name('ems.ambulances.update');
+ Route::patch('/ambulances/{ambulance:uuid}/status',[EmsOperationsController::class,'updateAmbulanceStatus'])->middleware('ems.permission:AmbulanceFleet,Manage')->name('ems.ambulances.status');
+ Route::post('/dispatches',[EmsOperationsController::class,'storeDispatch'])->middleware('ems.permission:DispatchAndMovement,Manage')->name('ems.dispatches.store');
+ Route::get('/dispatches/{dispatch:uuid}',[EmsOperationsController::class,'showDispatch'])->middleware('ems.permission:DispatchAndMovement,View')->name('ems.dispatches.show');
+ Route::get('/dispatches/{dispatch:uuid}/edit',[EmsOperationsController::class,'editDispatch'])->middleware('ems.permission:DispatchAndMovement,Manage')->name('ems.dispatches.edit');
+ Route::put('/dispatches/{dispatch:uuid}',[EmsOperationsController::class,'updateDispatch'])->middleware('ems.permission:DispatchAndMovement,Manage')->name('ems.dispatches.update');
+ Route::patch('/dispatches/{dispatch:uuid}/complete',[EmsOperationsController::class,'completeDispatch'])->middleware('ems.permission:DispatchAndMovement,Manage')->name('ems.dispatches.complete');
+ Route::post('/mileage',[EmsOperationsController::class,'storeMileage'])->middleware('ems.permission:AmbulanceFleet,Manage')->name('ems.mileage.store');
+ Route::post('/availability',[EmsOperationsController::class,'storeAvailability'])->middleware('ems.permission:ReadinessAndActivities,Manage')->name('ems.availability.store');
+ Route::post('/activities',[EmsOperationsController::class,'storeActivity'])->middleware('ems.permission:ReadinessAndActivities,Manage')->name('ems.activities.store');
+ Route::get('/reports',[EmsOperationsController::class,'reportsDashboard'])->middleware('ems.permission:EMSReports,View')->name('ems.reports');
+ Route::get('/reports/export/operations',[EmsOperationsController::class,'exportOperationsReport'])->middleware('ems.permission:EMSReports,Export')->name('ems.reports.operations.export');
+ Route::post('/reports',[EmsOperationsController::class,'generateReport'])->middleware('ems.permission:EMSReports,Manage')->name('ems.reports.store');
+ Route::get('/reports/{report:uuid}/print',[EmsOperationsController::class,'printReport'])->middleware('ems.permission:EMSReports,View')->name('ems.reports.print');
+ Route::patch('/reports/{report:uuid}/approve',[EmsOperationsController::class,'approveReport'])->middleware('ems.permission:EMSReports,Approve')->name('ems.reports.approve');
+ Route::get('/reports/{report:uuid}/export',[EmsOperationsController::class,'exportReport'])->middleware('ems.permission:EMSReports,Export')->name('ems.reports.export');
+ Route::get('/audit',[EmsOperationsController::class,'audit'])->middleware('ems.permission:EMSActivityAndAudit,View')->name('ems.audit');
+ Route::get('/audit/export',[EmsOperationsController::class,'exportAudit'])->middleware('ems.permission:EMSActivityAndAudit,Export')->name('ems.audit.export');
+});
+if(app()->environment('testing')){Route::view('/profile','profile')->middleware('auth')->name('profile');require __DIR__.'/auth.php';}

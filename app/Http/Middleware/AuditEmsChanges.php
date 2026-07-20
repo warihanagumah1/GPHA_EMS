@@ -1,0 +1,3 @@
+<?php
+namespace App\Http\Middleware;use App\Models\EmsAuditLog;use Closure;use Illuminate\Http\Request;use Symfony\Component\HttpFoundation\Response;
+class AuditEmsChanges { public function handle(Request $request,Closure $next):Response{$response=$next($request);if($request->user()&&!in_array($request->method(),['GET','HEAD','OPTIONS'],true)){EmsAuditLog::withoutGlobalScopes()->create(['user_id'=>$request->user()->id,'branch_code'=>session('sso.active_branch_code'),'action'=>'http.'.strtolower($request->method()),'route'=>$request->route()?->getName(),'method'=>$request->method(),'path'=>$request->path(),'ip_address'=>$request->ip(),'response_status'=>$response->getStatusCode()]);}return$response;} }

@@ -1,0 +1,18 @@
+@props(['ambulances', 'movement' => null, 'action' => null, 'method' => 'POST', 'submitLabel' => 'Save Movement'])
+
+<form method="POST" action="{{ $action ?: route('ems.dispatches.store') }}" class="space-y-5">
+    @csrf
+    @if(strtoupper($method) !== 'POST') @method($method) @endif
+    <div class="rounded-xl border border-slate-200 bg-slate-50/60 p-5" x-data="{notesOpen:@js(filled(old('notes',$movement?->notes)))}">
+        <div class="grid gap-x-5 gap-y-4 md:grid-cols-2 lg:grid-cols-3">
+            <label><span class="gpha-label">Ambulance <span class="text-red-600">*</span></span><select name="ambulance_id" class="gpha-input" required><option value="">Select ambulance</option>@foreach($ambulances->filter(fn($ambulance) => $ambulance->status === 'available' || $ambulance->id === $movement?->ambulance_id) as $ambulance)<option value="{{ $ambulance->id }}" @selected((string) old('ambulance_id', $movement?->ambulance_id) === (string) $ambulance->id)>{{ $ambulance->fleet_number }} · {{ $ambulance->registration_number }}</option>@endforeach</select></label>
+            <label><span class="gpha-label">Priority <span class="text-red-600">*</span></span><select name="priority" class="gpha-input" required>@foreach(['routine','urgent','critical'] as $priority)<option value="{{ $priority }}" @selected(old('priority',$movement?->priority ?? 'routine') === $priority)>{{ str($priority)->headline() }}</option>@endforeach</select></label>
+            <label><span class="gpha-label">Purpose / Case Category <span class="text-red-600">*</span></span><select name="purpose" class="gpha-input" required><option value="">Select case category</option>@foreach(config('ems.case_categories') as $category)<option value="{{ $category }}" @selected(old('purpose',$movement?->purpose) === $category)>{{ $category }}</option>@endforeach</select></label>
+            <label><span class="gpha-label">Origin <span class="text-red-600">*</span></span><select name="origin" class="gpha-input" required><option value="">Select origin</option>@foreach(config('ems.movement_locations') as $location)<option value="{{ $location }}" @selected(old('origin',$movement?->origin) === $location)>{{ $location }}</option>@endforeach</select></label>
+            <label><span class="gpha-label">Destination <span class="text-red-600">*</span></span><select name="destination" class="gpha-input" required><option value="">Select destination</option>@foreach(config('ems.movement_locations') as $location)<option value="{{ $location }}" @selected(old('destination',$movement?->destination) === $location)>{{ $location }}</option>@endforeach</select></label>
+            <div class="flex items-end"><button type="button" @click="notesOpen=!notesOpen" class="gpha-button-secondary w-full" x-text="notesOpen ? 'Hide Notes' : 'Add Optional Notes'"></button></div>
+            <label x-cloak x-show="notesOpen" x-transition class="md:col-span-2 lg:col-span-3"><span class="gpha-label">Operational Notes</span><textarea name="notes" class="gpha-input" rows="2" maxlength="2000" placeholder="Only add information that is important for this movement">{{ old('notes',$movement?->notes) }}</textarea></label>
+        </div>
+    </div>
+    <div class="flex justify-end"><button class="gpha-button-primary">{{ $submitLabel }}</button></div>
+</form>
