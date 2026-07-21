@@ -16,7 +16,7 @@ class EmsAuditLog extends Model
 
     protected function casts(): array
     {
-        return ['created_at' => 'datetime'];
+        return ['created_at' => 'datetime', 'old_values' => 'array', 'new_values' => 'array', 'metadata' => 'array'];
     }
 
     public function user(): BelongsTo

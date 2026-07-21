@@ -10,6 +10,7 @@ use App\Models\EmsReport;
 use App\Models\EmsAuditLog;
 use App\Models\MileageReading;
 use App\Models\WeeklyActivity;
+use App\Support\RichText;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -79,12 +80,16 @@ class EmsOperationsController extends Controller
                 'unit_name' => ['nullable','string','max:120'],
                 'responded' => ['nullable',Rule::in(['1','0'])],
             ]);
+            $matchingSessions = AvailabilityCheck::query()->select('session_uuid')
+                ->when(filled($availabilityFilters['unit_name'] ?? null), fn ($query) => $query->where('unit_name',$availabilityFilters['unit_name']))
+                ->when(array_key_exists('responded',$availabilityFilters) && $availabilityFilters['responded'] !== null && $availabilityFilters['responded'] !== '', fn ($query) => $query->where('responded',(bool) $availabilityFilters['responded']));
             $checks = AvailabilityCheck::query()
+                ->selectRaw('session_uuid, check_date, period, checked_at, COUNT(*) as unit_count, SUM(CASE WHEN responded = 1 THEN 1 ELSE 0 END) as responded_count')
                 ->when(filled($availabilityFilters['date_from'] ?? null), fn ($query) => $query->whereDate('check_date','>=',$availabilityFilters['date_from']))
                 ->when(filled($availabilityFilters['date_to'] ?? null), fn ($query) => $query->whereDate('check_date','<=',$availabilityFilters['date_to']))
                 ->when(filled($availabilityFilters['period'] ?? null), fn ($query) => $query->where('period',$availabilityFilters['period']))
-                ->when(filled($availabilityFilters['unit_name'] ?? null), fn ($query) => $query->where('unit_name',$availabilityFilters['unit_name']))
-                ->when(array_key_exists('responded',$availabilityFilters) && $availabilityFilters['responded'] !== null && $availabilityFilters['responded'] !== '', fn ($query) => $query->where('responded',(bool) $availabilityFilters['responded']))
+                ->when(filled($availabilityFilters['unit_name'] ?? null) || (($availabilityFilters['responded'] ?? '') !== ''), fn ($query) => $query->whereIn('session_uuid',$matchingSessions))
+                ->groupBy('session_uuid','check_date','period','checked_at')
                 ->latest('check_date')->latest('checked_at')->paginate(15)->withQueryString();
         }
 
@@ -183,11 +188,12 @@ class EmsOperationsController extends Controller
     {
         $data=$this->validateMovement($request);
         $ambulance=Ambulance::findOrFail($data['ambulance_id']);
-        if($ambulance->status!=='available')throw ValidationException::withMessages(['ambulance_id'=>'Only an available ambulance can be assigned to a new movement.']);
-        $data['odometer_start'] ??= $ambulance->odometer_km;
-        Dispatch::create($data+['uuid'=>(string)Str::uuid(),'reference'=>'EMS-'.now()->format('ymd').'-'.strtoupper(Str::random(5)),'status'=>'requested','requested_at'=>now(),'created_by'=>auth()->id()]);
-        $ambulance->update(['status'=>'dispatched','current_location'=>$data['destination']]);
-        return back()->with('success','Movement recorded and ambulance status updated.');
+        if($data['status']==='requested'&&$ambulance->status!=='available')throw ValidationException::withMessages(['ambulance_id'=>'Only an available ambulance can be assigned to a requested movement.']);
+        $movementDate=Carbon::parse($data['requested_at']);
+        if($data['status']==='completed')$data['completed_at']=$movementDate;
+        Dispatch::create($data+['uuid'=>(string)Str::uuid(),'reference'=>'EMS-'.$movementDate->format('ymd').'-'.strtoupper(Str::random(5)),'created_by'=>auth()->id()]);
+        if($data['status']==='requested')$ambulance->update(['status'=>'dispatched','current_location'=>$data['destination']]);
+        return back()->with('success',$data['status']==='completed'?'Completed movement recorded.':'Movement requested and ambulance status updated.');
     }
 
     public function showDispatch(Dispatch $dispatch)
@@ -198,7 +204,6 @@ class EmsOperationsController extends Controller
 
     public function editDispatch(Dispatch $dispatch)
     {
-        abort_if(in_array($dispatch->status, ['completed', 'cancelled'], true), 422, 'Completed or cancelled movements cannot be edited.');
         return view('ems.movements.edit', [
             'dispatch' => $dispatch,
             'ambulances' => Ambulance::orderBy('fleet_number')->get(),
@@ -207,24 +212,46 @@ class EmsOperationsController extends Controller
 
     public function updateDispatch(Request $request, Dispatch $dispatch): RedirectResponse
     {
-        abort_if(in_array($dispatch->status, ['completed', 'cancelled'], true), 422, 'Completed or cancelled movements cannot be edited.');
         $data = $this->validateMovement($request);
         $newAmbulance = Ambulance::findOrFail($data['ambulance_id']);
 
-        if ($newAmbulance->id !== $dispatch->ambulance_id && $newAmbulance->status !== 'available') {
+        if (($dispatch->status === 'completed' || $data['status'] === 'completed') && $newAmbulance->id !== $dispatch->ambulance_id) {
+            throw ValidationException::withMessages(['ambulance_id' => 'The ambulance cannot be changed on a completed movement.']);
+        }
+
+        $wasActive=$dispatch->status==='requested';
+        $willBeActive=$data['status']==='requested';
+        if ($willBeActive && (!$wasActive || $newAmbulance->id !== $dispatch->ambulance_id) && $newAmbulance->status !== 'available') {
             throw ValidationException::withMessages(['ambulance_id' => 'Only an available ambulance can be assigned to this movement.']);
         }
 
-        DB::transaction(function () use ($dispatch, $data, $newAmbulance) {
+        DB::transaction(function () use ($dispatch, $data, $newAmbulance, $wasActive, $willBeActive) {
             $previousAmbulance = $dispatch->ambulance;
+            $data['completed_at']=$willBeActive?null:($dispatch->completed_at??now());
             $dispatch->update($data);
-            $newAmbulance->update(['status' => 'dispatched', 'current_location' => $data['destination']]);
-            if ($previousAmbulance->id !== $newAmbulance->id) {
+            if($willBeActive)$newAmbulance->update(['status' => 'dispatched', 'current_location' => $data['destination']]);
+            if($wasActive&&!$willBeActive)$previousAmbulance->update(['status'=>'available','current_location'=>$data['destination']]);
+            elseif ($wasActive && $previousAmbulance->id !== $newAmbulance->id) {
                 $previousAmbulance->update(['status' => 'available']);
             }
         });
 
         return redirect()->route('ems.dispatches.show', $dispatch)->with('success', 'Movement updated successfully.');
+    }
+
+    public function destroyDispatch(Dispatch $dispatch): RedirectResponse
+    {
+        DB::transaction(function () use ($dispatch) {
+            $ambulance=$dispatch->ambulance;
+            $wasActive=!in_array($dispatch->status,['completed','cancelled'],true);
+            $origin=$dispatch->origin;
+            $dispatch->delete();
+            if($wasActive&&!$ambulance->dispatches()->whereNotIn('status',['completed','cancelled'])->exists()){
+                $ambulance->update(['status'=>'available','current_location'=>$origin]);
+            }
+        });
+
+        return redirect()->route('ems.dispatches')->with('success','Movement deleted. The record remains preserved in the audit trail.');
     }
 
     public function completeDispatch(Request $request, Dispatch $dispatch): RedirectResponse
@@ -240,42 +267,121 @@ class EmsOperationsController extends Controller
 
     public function storeMileage(Request $request): RedirectResponse
     {
-        $data=$request->validate(['ambulance_id'=>'required|exists:ambulances,id','reading_date'=>'required|date|before_or_equal:today','odometer_km'=>'required|integer|min:0|max:9999999','source'=>'required|in:weekly,service','notes'=>'nullable|string|max:1000']);
-        $ambulance=Ambulance::findOrFail($data['ambulance_id']);
-        $previous=MileageReading::where('ambulance_id',$ambulance->id)->whereDate('reading_date','<',$data['reading_date'])->latest('reading_date')->first();
-        $next=MileageReading::where('ambulance_id',$ambulance->id)->whereDate('reading_date','>',$data['reading_date'])->oldest('reading_date')->first();
-        if($previous && $data['odometer_km']<$previous->odometer_km)throw ValidationException::withMessages(['odometer_km'=>'The reading cannot be lower than the previous reading of '.number_format($previous->odometer_km).' km.']);
-        if($next && $data['odometer_km']>$next->odometer_km)throw ValidationException::withMessages(['odometer_km'=>'The reading cannot exceed the next recorded reading of '.number_format($next->odometer_km).' km.']);
-        if(!$next && $data['reading_date']===today()->toDateString() && $data['odometer_km']<$ambulance->odometer_km)throw ValidationException::withMessages(['odometer_km'=>'Today’s reading cannot be lower than the current ambulance odometer of '.number_format($ambulance->odometer_km).' km.']);
-        DB::transaction(function() use($data,$ambulance,$next){ MileageReading::updateOrCreate(['ambulance_id'=>$data['ambulance_id'],'reading_date'=>$data['reading_date'],'source'=>$data['source']],$data+['recorded_by'=>auth()->id()]); if(!$next && $data['odometer_km']>=$ambulance->odometer_km)$ambulance->update(['odometer_km'=>$data['odometer_km']]); });
+        [$data,$ambulance,$next]=$this->validateMileage($request);
+        DB::transaction(function() use($data,$ambulance,$next){ MileageReading::create($data+['recorded_by'=>auth()->id()]); if(!$next && $data['odometer_km']>=$ambulance->odometer_km)$ambulance->update(['odometer_km'=>$data['odometer_km']]); });
         return back()->with('success','Mileage reading saved.');
+    }
+
+    public function showMileage(MileageReading $reading)
+    {
+        $reading->load(['ambulance','recordedBy']);
+        return view('ems.mileage.show',compact('reading'));
+    }
+
+    public function editMileage(MileageReading $reading)
+    {
+        return view('ems.mileage.edit',[
+            'reading'=>$reading->load('ambulance'),
+            'ambulances'=>Ambulance::orderBy('fleet_number')->get(),
+        ]);
+    }
+
+    public function updateMileage(Request $request,MileageReading $reading): RedirectResponse
+    {
+        [$data,$ambulance,$next]=$this->validateMileage($request,$reading);
+        DB::transaction(function()use($reading,$data,$ambulance,$next){
+            $reading->update($data);
+            if(!$next&&$data['odometer_km']>=$ambulance->odometer_km)$ambulance->update(['odometer_km'=>$data['odometer_km']]);
+        });
+        return redirect()->route('ems.mileage.show',$reading)->with('success','Mileage reading updated successfully.');
+    }
+
+    public function destroyMileage(MileageReading $reading): RedirectResponse
+    {
+        $reading->delete();
+        return redirect()->route('ems.mileage')->with('success','Mileage reading deleted. The record remains preserved in the audit trail.');
     }
 
     public function storeAvailability(Request $request): RedirectResponse
     {
         if($request->has('checks')){
-            $data=$request->validate([
-                'check_date'=>'required|date|before_or_equal:today','period'=>'required|in:morning,afternoon','checked_at'=>'required|date_format:H:i',
-                'checks'=>'required|array|min:1','checks.*.unit_name'=>'required|string|max:120','checks.*.responded'=>'required|boolean',
-                'checks.*.response_location'=>'nullable|string|max:160','checks.*.observation'=>'nullable|string|max:1000',
-            ]);
-            DB::transaction(function()use($data){foreach($data['checks'] as $check)AvailabilityCheck::updateOrCreate(
-                ['check_date'=>$data['check_date'],'period'=>$data['period'],'unit_name'=>$check['unit_name']],
-                $check+['checked_at'=>$data['checked_at'],'recorded_by'=>auth()->id()]
+            $data=$this->validateAvailabilitySession($request);
+            if(AvailabilityCheck::whereDate('check_date',$data['check_date'])->where('period',$data['period'])->exists()){
+                throw ValidationException::withMessages(['period'=>'A '.$data['period'].' check session already exists for this date. Open that session and use Edit.']);
+            }
+            $sessionUuid=(string)Str::uuid();
+            DB::transaction(function()use($data,$sessionUuid){foreach($data['checks'] as $check)AvailabilityCheck::create(
+                $check+['session_uuid'=>$sessionUuid,'check_date'=>$data['check_date'],'period'=>$data['period'],'checked_at'=>$data['checked_at'],'recorded_by'=>auth()->id()]
             );});
             return back()->with('success',count($data['checks']).' availability checks saved for the session.');
         }
         $data=$request->validate(['check_date'=>'required|date|before_or_equal:today','period'=>'required|in:morning,afternoon','checked_at'=>'nullable|date_format:H:i','unit_name'=>'required|max:120','responded'=>'required|boolean','response_location'=>'nullable|max:160','observation'=>'nullable|max:1000']);
-        AvailabilityCheck::updateOrCreate(['check_date'=>$data['check_date'],'period'=>$data['period'],'unit_name'=>$data['unit_name']],$data+['checked_at'=>$data['checked_at']??now()->format('H:i'),'recorded_by'=>auth()->id()]);
+        AvailabilityCheck::create($data+['session_uuid'=>(string)Str::uuid(),'checked_at'=>$data['checked_at']??now()->format('H:i'),'recorded_by'=>auth()->id()]);
         return back()->with('success','Availability check saved.');
+    }
+
+    public function showAvailabilitySession(string $session)
+    {
+        $checks=$this->availabilitySession($session);
+        return view('ems.availability.show',compact('checks','session'));
+    }
+
+    public function editAvailabilitySession(string $session)
+    {
+        $checks=$this->availabilitySession($session);
+        return view('ems.availability.edit',compact('checks','session'));
+    }
+
+    public function updateAvailabilitySession(Request $request,string $session): RedirectResponse
+    {
+        $checks=$this->availabilitySession($session);
+        $data=$this->validateAvailabilitySession($request,true);
+        $duplicate=AvailabilityCheck::whereDate('check_date',$data['check_date'])->where('period',$data['period'])->where('session_uuid','!=',$session)->exists();
+        if($duplicate)throw ValidationException::withMessages(['period'=>'Another '.$data['period'].' check session already exists for this date.']);
+
+        $submitted=collect($data['checks'])->mapWithKeys(fn($row)=>[(int)$row['id']=>$row]);
+        abort_unless($submitted->keys()->sort()->values()->all()===$checks->pluck('id')->sort()->values()->all(),422,'Every check in the session must be submitted.');
+        DB::transaction(function()use($checks,$data,$submitted){foreach($checks as $check){$row=$submitted->get($check->id);$check->update([
+            'check_date'=>$data['check_date'],'period'=>$data['period'],'checked_at'=>$data['checked_at'],'responded'=>$row['responded'],
+            'response_location'=>$row['response_location']??null,'observation'=>$row['observation']??null,
+        ]);}});
+        return redirect()->route('ems.availability.sessions.show',$session)->with('success','Check session updated successfully.');
+    }
+
+    public function destroyAvailabilitySession(string $session): RedirectResponse
+    {
+        $checks=$this->availabilitySession($session);
+        DB::transaction(fn()=> $checks->each->delete());
+        return redirect()->route('ems.availability')->with('success','Check session deleted. Its history remains preserved in the audit trail.');
     }
 
     public function storeActivity(Request $request): RedirectResponse
     {
-        $data=$request->validate(['activity_date'=>'required|date|before_or_equal:today','category'=>'required|in:operations,meeting,training,inspection,administration,outreach','description'=>'required|max:4000','outcome'=>'nullable|max:2000','requires_follow_up'=>'nullable|boolean','follow_up_action'=>'nullable|required_if:requires_follow_up,1|max:2000','follow_up_owner'=>'nullable|required_if:requires_follow_up,1|max:160','follow_up_due_date'=>'nullable|date|after_or_equal:activity_date']);
-        $data['title']=str($data['description'])->before('.')->squish()->limit(120)->toString();
-        WeeklyActivity::create($data+['requires_follow_up'=>$request->boolean('requires_follow_up'),'created_by'=>auth()->id()]);
+        $data=$this->validateActivity($request);
+        WeeklyActivity::create($data+['created_by'=>auth()->id()]);
         return back()->with('success','Weekly activity recorded.');
+    }
+
+    public function showActivity(WeeklyActivity $activity)
+    {
+        return view('ems.activities.show',compact('activity'));
+    }
+
+    public function editActivity(WeeklyActivity $activity)
+    {
+        return view('ems.activities.edit',compact('activity'));
+    }
+
+    public function updateActivity(Request $request,WeeklyActivity $activity): RedirectResponse
+    {
+        $activity->update($this->validateActivity($request));
+        return redirect()->route('ems.activities.show',$activity)->with('success','Activity updated successfully.');
+    }
+
+    public function destroyActivity(WeeklyActivity $activity): RedirectResponse
+    {
+        $activity->delete();
+        return redirect()->route('ems.activities')->with('success','Activity deleted. Its history remains preserved in the audit trail.');
     }
 
     public function generateReport(Request $request): RedirectResponse
@@ -362,7 +468,7 @@ class EmsOperationsController extends Controller
 
     public function exportAudit()
     {
-        return response()->streamDownload(function(){$out=fopen('php://output','w');fputcsv($out,['Date','User','Branch','Action','Route','Method','Path','Status']);EmsAuditLog::with('user')->latest('created_at')->chunk(500,function($logs)use($out){foreach($logs as $log)fputcsv($out,[$log->created_at,$log->user?->name,$log->branch_code,$log->action,$log->route,$log->method,$log->path,$log->response_status]);});fclose($out);},'EMS-audit-'.today()->format('Y-m-d').'.csv',['Content-Type'=>'text/csv']);
+        return response()->streamDownload(function(){$out=fopen('php://output','w');fputcsv($out,['Date','User','Branch','Action','Record Type','Record Reference','Previous Values','New Values','Route','Method','Path','Status']);EmsAuditLog::with('user')->latest('created_at')->chunk(500,function($logs)use($out){foreach($logs as $log)fputcsv($out,[$log->created_at,$log->user?->name,$log->branch_code,$log->action,$log->subject_type,$log->subject_reference,json_encode($log->old_values,JSON_UNESCAPED_SLASHES),json_encode($log->new_values,JSON_UNESCAPED_SLASHES),$log->route,$log->method,$log->path,$log->response_status]);});fclose($out);},'EMS-audit-'.today()->format('Y-m-d').'.csv',['Content-Type'=>'text/csv']);
     }
 
     private function validateAmbulance(Request $request, ?Ambulance $ambulance = null): array
@@ -377,6 +483,18 @@ class EmsOperationsController extends Controller
             'registration_number' => strtoupper((string) preg_replace('/\s+/', ' ', trim((string) $request->input('registration_number')))),
         ]);
 
+        $registrationYear=function($attribute,$value,$fail)use($request){
+            if(!preg_match('/-([0-9]{2})$/',(string)$value,$matches))return;
+            $year=2000+(int)$matches[1];
+            if($year>now()->year)$fail('The registration year cannot be in the future.');
+            if($request->filled('year')&&$year<(int)$request->input('year'))$fail('The registration year cannot be earlier than the vehicle manufacture year.');
+        };
+        $validExpiry=function(string $column)use($ambulance){return function($attribute,$value,$fail)use($ambulance,$column){
+            if(!$value)return;
+            $existing=$ambulance?->{$column}?->toDateString();
+            if(Carbon::parse($value)->isBefore(today())&&$value!==$existing)$fail('The '.$attribute.' must be today or a future date.');
+        };};
+
         return $request->validate([
             'fleet_number' => [
                 'required',
@@ -385,21 +503,23 @@ class EmsOperationsController extends Controller
                 'regex:/^AMBU(?:LANCE)?[\s-]?[0-9]{1,3}$/i',
                 Rule::unique('ambulances', 'fleet_number')->ignore($ambulance?->id),
             ],
-            'registration_number' => ['required', 'string', 'max:30', Rule::unique('ambulances', 'registration_number')->ignore($ambulance?->id)],
-            'make' => ['nullable', 'string', 'max:80'],
-            'model' => ['nullable', 'string', 'max:80'],
-            'year' => ['nullable', 'integer', 'min:1990', 'max:'.(now()->year + 1)],
-            'base_location' => ['required', 'string', 'max:120'],
+            'registration_number' => ['required', 'string', 'max:30', 'regex:/^[A-Z]{1,3} [0-9]{1,4}-[0-9]{2}$/', $registrationYear, Rule::unique('ambulances', 'registration_number')->ignore($ambulance?->id)],
+            'make' => ['nullable', 'string', 'max:80', "regex:/^[\\pL\\pN .&()\\/'-]+$/u"],
+            'model' => ['nullable', 'string', 'max:80', "regex:/^[\\pL\\pN .&()\\/'-]+$/u"],
+            'year' => ['nullable', 'integer', 'min:1980', 'max:'.now()->year],
+            'base_location' => ['required', Rule::in(config('ems.movement_locations'))],
             'odometer_km' => ['required', 'integer', 'min:0', 'max:9999999'],
-            'next_service_km' => ['nullable', 'integer', 'gte:odometer_km', 'max:9999999'],
-            'roadworthy_expires_at' => ['nullable', 'date'],
-            'insurance_expires_at' => ['nullable', 'date'],
+            'roadworthy_expires_at' => ['nullable', 'date_format:Y-m-d', $validExpiry('roadworthy_expires_at')],
+            'insurance_expires_at' => ['nullable', 'date_format:Y-m-d', $validExpiry('insurance_expires_at')],
             'notes' => ['nullable', 'string', 'max:2000'],
         ], [
             'fleet_number.regex' => 'Enter a valid ambulance number such as AMBU 1 or AMBULANCE 1.',
             'fleet_number.unique' => 'This ambulance number has already been registered.',
+            'registration_number.regex' => 'Enter a valid Ghana registration number such as GV 1234-26.',
             'registration_number.unique' => 'This vehicle registration number has already been registered.',
-            'next_service_km.gte' => 'The next service odometer must be equal to or greater than the current odometer.',
+            'year.min' => 'The manufacture year must be 1980 or later.',
+            'year.max' => 'The manufacture year cannot be in the future.',
+            'base_location.in' => 'Select a valid predefined base location.',
         ]);
     }
 
@@ -408,13 +528,37 @@ class EmsOperationsController extends Controller
         return $request->validate([
             'ambulance_id'=>['required','exists:ambulances,id'],
             'priority'=>['required',Rule::in(['routine','urgent','critical'])],
+            'requested_at'=>['required','date','before_or_equal:now'],
+            'status'=>['required',Rule::in(['requested','completed'])],
             'origin'=>['required',Rule::in(config('ems.movement_locations'))],
             'destination'=>['required','different:origin',Rule::in(config('ems.movement_locations'))],
             'purpose'=>['required',Rule::in(config('ems.case_categories'))],
-            'crew_lead'=>['nullable','string','max:120'],
-            'odometer_start'=>['nullable','integer','min:0'],
             'notes'=>['nullable','string','max:2000'],
-        ], ['destination.different'=>'The destination must be different from the origin.']);
+        ], ['destination.different'=>'The destination must be different from the origin.','requested_at.before_or_equal'=>'The movement date and time cannot be in the future.']);
+    }
+
+    private function validateMileage(Request $request,?MileageReading $reading=null): array
+    {
+        $data=$request->validate([
+            'ambulance_id'=>['required','integer','exists:ambulances,id'],
+            'reading_date'=>['required','date','before_or_equal:today'],
+            'odometer_km'=>['required','integer','min:0','max:9999999'],
+            'source'=>['required',Rule::in(['weekly','service'])],
+            'notes'=>['nullable','string','max:1000'],
+        ]);
+        $ambulance=Ambulance::findOrFail($data['ambulance_id']);
+        $duplicate=MileageReading::where('ambulance_id',$ambulance->id)
+            ->whereDate('reading_date',$data['reading_date'])->where('source',$data['source'])
+            ->when($reading,fn($query)=>$query->where('id','!=',$reading->id))->exists();
+        if($duplicate)throw ValidationException::withMessages(['reading_date'=>'A '.$data['source'].' reading already exists for this ambulance on this date.']);
+        $previous=MileageReading::where('ambulance_id',$ambulance->id)->whereDate('reading_date','<',$data['reading_date'])
+            ->when($reading,fn($query)=>$query->where('id','!=',$reading->id))->latest('reading_date')->first();
+        $next=MileageReading::where('ambulance_id',$ambulance->id)->whereDate('reading_date','>',$data['reading_date'])
+            ->when($reading,fn($query)=>$query->where('id','!=',$reading->id))->oldest('reading_date')->first();
+        if($previous&&$data['odometer_km']<$previous->odometer_km)throw ValidationException::withMessages(['odometer_km'=>'The reading cannot be lower than the previous reading of '.number_format($previous->odometer_km).' km.']);
+        if($next&&$data['odometer_km']>$next->odometer_km)throw ValidationException::withMessages(['odometer_km'=>'The reading cannot exceed the next recorded reading of '.number_format($next->odometer_km).' km.']);
+        if(!$next&&$data['reading_date']===today()->toDateString()&&$data['odometer_km']<$ambulance->odometer_km)throw ValidationException::withMessages(['odometer_km'=>'Today’s reading cannot be lower than the current ambulance odometer of '.number_format($ambulance->odometer_km).' km.']);
+        return [$data,$ambulance,$next];
     }
 
     private function reportFilters(Request $request): array
@@ -499,6 +643,7 @@ class EmsOperationsController extends Controller
     {
         $checks = AvailabilityCheck::whereDate('check_date','>=',$periodStart)->whereDate('check_date','<=',$periodEnd)->oldest('check_date')->orderBy('checked_at')->orderBy('unit_name')->get();
         $rows = $checks->map(fn (AvailabilityCheck $check) => [
+            'session_uuid' => $check->session_uuid,
             'date' => Carbon::parse($check->check_date)->toDateString(),
             'period' => $check->period,
             'time' => $check->checked_at,
@@ -521,6 +666,47 @@ class EmsOperationsController extends Controller
             'Use repeated negative-response trends to prioritise corrective action and equipment replacement.',
         ];
         return [['checks' => $rows, 'response_rate' => $rate, 'responded' => $responded, 'negative' => $checks->count() - $responded], $summary, $recommendations];
+    }
+
+    private function availabilitySession(string $session)
+    {
+        $checks=AvailabilityCheck::where('session_uuid',$session)->orderBy('unit_name')->get();
+        abort_if($checks->isEmpty(),404);
+        return $checks;
+    }
+
+    private function validateAvailabilitySession(Request $request,bool $editing=false): array
+    {
+        return $request->validate([
+            'check_date'=>'required|date|before_or_equal:today',
+            'period'=>'required|in:morning,afternoon',
+            'checked_at'=>'required|date_format:H:i',
+            'checks'=>'required|array|min:1',
+            'checks.*.id'=>$editing?'required|integer|exists:availability_checks,id':'prohibited',
+            'checks.*.unit_name'=>$editing?'prohibited':'required|string|max:120',
+            'checks.*.responded'=>'required|boolean',
+            'checks.*.response_location'=>'nullable|string|max:160',
+            'checks.*.observation'=>'nullable|string|max:1000',
+        ]);
+    }
+
+    private function validateActivity(Request $request): array
+    {
+        $data=$request->validate([
+            'activity_date'=>'required|date|before_or_equal:today','category'=>'required|in:operations,meeting,training,inspection,administration,outreach',
+            'description'=>'required|string|max:12000','outcome'=>'nullable|string|max:6000','requires_follow_up'=>'nullable|boolean',
+            'follow_up_action'=>'nullable|required_if:requires_follow_up,1|max:2000','follow_up_owner'=>'nullable|required_if:requires_follow_up,1|max:160',
+            'follow_up_due_date'=>'nullable|date|after_or_equal:activity_date',
+        ]);
+        $data['description']=RichText::clean($data['description']);
+        $data['outcome']=RichText::clean($data['outcome']??null);
+        if(RichText::plain($data['description'])==='')throw ValidationException::withMessages(['description'=>'Please enter the activity details.']);
+        $data['title']=str(RichText::plain($data['description']))->before('.')->squish()->limit(120)->toString();
+        $data['requires_follow_up']=$request->boolean('requires_follow_up');
+        if(!$data['requires_follow_up']){
+            $data['follow_up_action']=null;$data['follow_up_owner']=null;$data['follow_up_due_date']=null;
+        }
+        return $data;
     }
 
     private function buildWeeklyOperationsReport(string $periodStart, string $periodEnd): array

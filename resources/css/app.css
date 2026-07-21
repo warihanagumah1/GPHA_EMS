@@ -28,6 +28,8 @@
     .gpha-top-pipe::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 6px; background: var(--color-gpha-secondary); border-radius: 999px 999px 0 0; pointer-events: none; }
     .gpha-button-primary { @apply inline-flex min-h-11 items-center justify-center gap-2 rounded bg-gpha-primary px-4 py-2.5 font-extrabold text-white shadow-sm transition hover:bg-gpha-primary-dark; font-size: 20px; }
     .gpha-button-secondary { @apply inline-flex min-h-11 items-center justify-center gap-2 rounded border border-slate-300 bg-white px-4 py-2.5 font-extrabold text-slate-700 hover:border-gpha-primary hover:text-gpha-primary; font-size: 20px; }
+    .gpha-button-danger { @apply inline-flex min-h-11 items-center justify-center gap-2 rounded bg-red-600 px-4 py-2.5 font-extrabold text-white shadow-sm transition hover:bg-red-700 disabled:cursor-wait disabled:opacity-75; font-size: 20px; }
+    .gpha-button-success { @apply inline-flex min-h-11 items-center justify-center gap-2 rounded bg-emerald-600 px-4 py-2.5 font-extrabold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-wait disabled:opacity-75; font-size: 20px; }
     .gpha-label { @apply mb-1.5 block font-bold text-slate-700; font-size: 18px; line-height: 1.35; }
     .gpha-input { @apply block h-12 w-full rounded border-slate-300 bg-white shadow-sm focus:border-gpha-primary focus:ring-gpha-primary; font-size: 20px; }
     textarea.gpha-input { height: auto; }
@@ -53,4 +55,18 @@
     .gpha-user-role { font-size: 14px !important; line-height: 1.25 !important; }
     .gpha-chart-label { font-size: 14px !important; line-height: 1.2 !important; }
     .gpha-help-text { font-size: 14px !important; line-height: 1.3 !important; }
+    .gpha-rich-editor { @apply overflow-hidden rounded border border-slate-300 bg-white shadow-sm focus-within:border-gpha-primary focus-within:ring-1 focus-within:ring-gpha-primary; }
+    .gpha-rich-toolbar { @apply flex flex-wrap items-center gap-1 border-b border-slate-200 bg-slate-50 px-2 py-2; }
+    .gpha-rich-toolbar button { @apply min-h-9 rounded px-3 py-1 font-bold text-slate-700 shadow-none hover:bg-white hover:text-gpha-primary; font-size: 16px !important; }
+    .gpha-rich-divider { @apply mx-1 h-6 w-px bg-slate-300; }
+    .gpha-rich-content { @apply min-h-36 px-4 py-3 text-slate-800 outline-none; font-size: 20px; line-height: 1.6; }
+    .gpha-rich-content:empty::before { content: attr(data-placeholder); @apply pointer-events-none text-slate-400; }
+    .gpha-rich-content.has-error { @apply ring-2 ring-red-500; }
+    .gpha-rich-content ul, .report-rich-text ul { @apply my-2 list-disc pl-7; }
+    .gpha-rich-content ol, .report-rich-text ol { @apply my-2 list-decimal pl-7; }
+    .gpha-rich-content p, .report-rich-text p { @apply my-1; }
+    .gpha-loading-spinner { width: 1.15rem; height: 1.15rem; border: 3px solid currentColor; border-right-color: transparent; border-radius: 9999px; display: inline-block; animation: gpha-spin .65s linear infinite; }
+    button.is-loading { cursor: wait; opacity: .82; transform: none !important; }
 }
+
+@keyframes gpha-spin { to { transform: rotate(360deg); } }

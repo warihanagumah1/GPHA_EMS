@@ -62,7 +62,7 @@ new class extends Component {
             @if($permissions->allows('EMSReports','View'))
                 <a href="{{ route('ems.reports') }}" wire:navigate class="rounded-lg px-4 py-3 font-extrabold {{ request()->routeIs('ems.reports') ? 'bg-white text-gpha-primary' : 'bg-white/10 text-white hover:bg-white/20' }}">Reports</a>
             @endif
-            <button wire:click="logout" wire:confirm="Are you sure you want to log out of GPHA EMS?" class="mt-2 inline-flex items-center gap-2 rounded-lg bg-white/10 px-4 py-3 font-extrabold text-[#ff5757] hover:bg-white/20 lg:ml-auto lg:mt-0">
+            <button type="button" @click="$dispatch('gpha-confirm', { title: 'Log Out of GPHA EMS?', message: 'Your current session will end and you will be returned to the Central Login portal.', confirmLabel: 'Yes, Log Out', tone: 'danger', onConfirm: () => $wire.logout() })" class="mt-2 inline-flex items-center gap-2 rounded-lg bg-white/10 px-4 py-3 font-extrabold text-[#ff5757] hover:bg-white/20 lg:ml-auto lg:mt-0">
                 <svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2v-3M10 12h11m0 0-3-3m3 3-3 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
                 Logout
             </button>

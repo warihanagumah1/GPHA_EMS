@@ -38,10 +38,10 @@
 
         @if($canManage && $ambulance->status !== 'dispatched')
             <div class="mt-4 flex justify-end">
-                <form method="POST" action="{{ route('ems.ambulances.status', $ambulance) }}" onsubmit="return confirm('Change the availability of this ambulance?')">
+                <form method="POST" action="{{ route('ems.ambulances.status', $ambulance) }}" class="inline-flex" data-confirm-title="Change Ambulance Status?" data-confirm-message="{{ $ambulance->fleet_number }} will be marked {{ $ambulance->status === 'available' ? 'unavailable' : 'available' }}." data-confirm-label="Yes, Mark {{ $ambulance->status === 'available' ? 'Unavailable' : 'Available' }}" data-confirm-tone="{{ $ambulance->status === 'available' ? 'danger' : 'success' }}">
                     @csrf @method('PATCH')
                     <input type="hidden" name="status" value="{{ $ambulance->status === 'available' ? 'unavailable' : 'available' }}">
-                    <button class="{{ $ambulance->status === 'available' ? 'rounded bg-red-600 px-4 py-2 font-extrabold text-white hover:bg-red-700' : 'rounded bg-emerald-600 px-4 py-2 font-extrabold text-white hover:bg-emerald-700' }}">{{ $ambulance->status === 'available' ? 'Mark Unavailable' : 'Mark Available' }}</button>
+                    <button class="{{ $ambulance->status === 'available' ? 'gpha-button-danger' : 'gpha-button-success' }}">{{ $ambulance->status === 'available' ? 'Mark Unavailable' : 'Mark Available' }}</button>
                 </form>
             </div>
         @endif

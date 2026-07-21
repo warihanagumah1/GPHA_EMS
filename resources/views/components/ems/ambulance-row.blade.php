@@ -13,7 +13,7 @@
             @if($canManage)
                 <a href="{{ route('ems.ambulances.edit', $ambulance) }}" @click="open=false" class="block w-full px-4 py-2 text-left font-semibold text-gpha-primary hover:bg-blue-50">Edit</a>
                 @if($ambulance->status !== 'dispatched')
-                    <form method="POST" action="{{ route('ems.ambulances.status', $ambulance) }}" onsubmit="return confirm('Change the availability of {{ addslashes($ambulance->fleet_number) }}?')">
+                    <form method="POST" action="{{ route('ems.ambulances.status', $ambulance) }}" data-confirm-title="Change Ambulance Status?" data-confirm-message="{{ $ambulance->fleet_number }} will be marked {{ $ambulance->status === 'available' ? 'unavailable' : 'available' }}." data-confirm-label="Yes, Mark {{ $ambulance->status === 'available' ? 'Unavailable' : 'Available' }}" data-confirm-tone="{{ $ambulance->status === 'available' ? 'danger' : 'success' }}">
                         @csrf @method('PATCH')
                         <input type="hidden" name="status" value="{{ $ambulance->status === 'available' ? 'unavailable' : 'available' }}">
                         <button type="submit" class="block min-h-0 w-full px-4 py-2 text-left font-semibold {{ $ambulance->status === 'available' ? 'text-red-600 hover:bg-red-50' : 'text-emerald-700 hover:bg-emerald-50' }}">
