@@ -39,7 +39,9 @@ class EmsOperationsController extends Controller
         abort_unless(in_array($module, ['ambulances','dispatches','mileage','availability','activities'], true), 404);
 
         $movementFilters = [];
+        $mileageFilters = [];
         $availabilityFilters = [];
+        $activityFilters = [];
         $dispatches = collect();
         if ($module === 'dispatches') {
             $movementFilters = $request->validate([
@@ -68,7 +70,44 @@ class EmsOperationsController extends Controller
                 ->when(filled($movementFilters['destination'] ?? null), fn ($query) => $query->where('destination',$movementFilters['destination']))
                 ->when(filled($movementFilters['date_from'] ?? null), fn ($query) => $query->whereDate('requested_at','>=',$movementFilters['date_from']))
                 ->when(filled($movementFilters['date_to'] ?? null), fn ($query) => $query->whereDate('requested_at','<=',$movementFilters['date_to']))
-                ->latest('requested_at')->paginate(20)->withQueryString();
+                ->latest('requested_at')->paginate(15)->withQueryString();
+        }
+
+        $readings = collect();
+        $mileageMovementSummaries = collect();
+        $mileageTotalMovement = 0;
+        if ($module === 'mileage') {
+            $mileageFilters = $request->validate([
+                'ambulance_id' => ['nullable','integer','exists:ambulances,id'],
+                'source' => ['nullable',Rule::in(['weekly','service'])],
+                'date_from' => ['nullable','date'],
+                'date_to' => ['nullable','date','after_or_equal:date_from'],
+            ]);
+            $mileageQuery = MileageReading::with('ambulance')
+                ->when(filled($mileageFilters['ambulance_id'] ?? null), fn ($query) => $query->where('ambulance_id',$mileageFilters['ambulance_id']))
+                ->when(filled($mileageFilters['source'] ?? null), fn ($query) => $query->where('source',$mileageFilters['source']))
+                ->when(filled($mileageFilters['date_from'] ?? null), fn ($query) => $query->whereDate('reading_date','>=',$mileageFilters['date_from']))
+                ->when(filled($mileageFilters['date_to'] ?? null), fn ($query) => $query->whereDate('reading_date','<=',$mileageFilters['date_to']));
+
+            $summaryReadings = (clone $mileageQuery)->oldest('reading_date')->oldest('id')->get();
+            $mileageMovementSummaries = $summaryReadings->groupBy('ambulance_id')
+                ->map(function ($ambulanceReadings) {
+                    $first = $ambulanceReadings->first();
+                    $last = $ambulanceReadings->last();
+                    $hasMovement = $ambulanceReadings->count() >= 2;
+
+                    return [
+                        'ambulance' => $first->ambulance?->fleet_number ?? 'Unknown ambulance',
+                        'reading_count' => $ambulanceReadings->count(),
+                        'first_date' => $first->reading_date,
+                        'last_date' => $last->reading_date,
+                        'opening_odometer' => (int) $first->odometer_km,
+                        'closing_odometer' => (int) $last->odometer_km,
+                        'movement_km' => $hasMovement ? max(0, (int) $last->odometer_km - (int) $first->odometer_km) : null,
+                    ];
+                })->sortBy('ambulance')->values();
+            $mileageTotalMovement = $mileageMovementSummaries->sum(fn ($summary) => $summary['movement_km'] ?? 0);
+            $readings = $mileageQuery->latest('reading_date')->latest('id')->paginate(15)->withQueryString();
         }
 
         $checks = collect();
@@ -77,32 +116,62 @@ class EmsOperationsController extends Controller
                 'date_from' => ['nullable','date'],
                 'date_to' => ['nullable','date','after_or_equal:date_from'],
                 'period' => ['nullable',Rule::in(['morning','afternoon'])],
-                'unit_name' => ['nullable','string','max:120'],
-                'responded' => ['nullable',Rule::in(['1','0'])],
+                'response_status' => ['nullable',Rule::in(['all_responded','has_no_response'])],
             ]);
-            $matchingSessions = AvailabilityCheck::query()->select('session_uuid')
-                ->when(filled($availabilityFilters['unit_name'] ?? null), fn ($query) => $query->where('unit_name',$availabilityFilters['unit_name']))
-                ->when(array_key_exists('responded',$availabilityFilters) && $availabilityFilters['responded'] !== null && $availabilityFilters['responded'] !== '', fn ($query) => $query->where('responded',(bool) $availabilityFilters['responded']));
             $checks = AvailabilityCheck::query()
                 ->selectRaw('session_uuid, check_date, period, checked_at, COUNT(*) as unit_count, SUM(CASE WHEN responded = 1 THEN 1 ELSE 0 END) as responded_count')
                 ->when(filled($availabilityFilters['date_from'] ?? null), fn ($query) => $query->whereDate('check_date','>=',$availabilityFilters['date_from']))
                 ->when(filled($availabilityFilters['date_to'] ?? null), fn ($query) => $query->whereDate('check_date','<=',$availabilityFilters['date_to']))
                 ->when(filled($availabilityFilters['period'] ?? null), fn ($query) => $query->where('period',$availabilityFilters['period']))
-                ->when(filled($availabilityFilters['unit_name'] ?? null) || (($availabilityFilters['responded'] ?? '') !== ''), fn ($query) => $query->whereIn('session_uuid',$matchingSessions))
                 ->groupBy('session_uuid','check_date','period','checked_at')
+                ->when(($availabilityFilters['response_status'] ?? '') === 'all_responded', fn ($query) => $query->havingRaw('SUM(CASE WHEN responded = 1 THEN 1 ELSE 0 END) = COUNT(*)'))
+                ->when(($availabilityFilters['response_status'] ?? '') === 'has_no_response', fn ($query) => $query->havingRaw('SUM(CASE WHEN responded = 1 THEN 1 ELSE 0 END) < COUNT(*)'))
                 ->latest('check_date')->latest('checked_at')->paginate(15)->withQueryString();
         }
 
+        $activities = collect();
+        if ($module === 'activities') {
+            $activityFilters = $request->validate([
+                'search' => ['nullable','string','max:120'],
+                'category' => ['nullable',Rule::in(['operations','meeting','training','inspection','administration','outreach'])],
+                'requires_follow_up' => ['nullable',Rule::in(['1','0'])],
+                'date_from' => ['nullable','date'],
+                'date_to' => ['nullable','date','after_or_equal:date_from'],
+            ]);
+            $activities = WeeklyActivity::query()
+                ->when(filled($activityFilters['search'] ?? null), function ($query) use ($activityFilters) {
+                    $search = trim($activityFilters['search']);
+                    $query->where(fn ($query) => $query->where('title','like',"%{$search}%")
+                        ->orWhere('description','like',"%{$search}%")
+                        ->orWhere('outcome','like',"%{$search}%")
+                        ->orWhere('follow_up_action','like',"%{$search}%")
+                        ->orWhere('follow_up_owner','like',"%{$search}%"));
+                })
+                ->when(filled($activityFilters['category'] ?? null), fn ($query) => $query->where('category',$activityFilters['category']))
+                ->when(($activityFilters['requires_follow_up'] ?? '') !== '', fn ($query) => $query->where('requires_follow_up',(bool) $activityFilters['requires_follow_up']))
+                ->when(filled($activityFilters['date_from'] ?? null), fn ($query) => $query->whereDate('activity_date','>=',$activityFilters['date_from']))
+                ->when(filled($activityFilters['date_to'] ?? null), fn ($query) => $query->whereDate('activity_date','<=',$activityFilters['date_to']))
+                ->latest('activity_date')->latest('id')->paginate(15)->withQueryString();
+        }
+
         $ambulances = Ambulance::orderBy('fleet_number')->get();
+        $fleet = $module === 'ambulances'
+            ? Ambulance::orderBy('fleet_number')->paginate(15)->withQueryString()
+            : collect();
         return view('ems.module', [
             'module' => $module,
             'ambulances' => $ambulances,
+            'fleet' => $fleet,
             'dispatches' => $dispatches,
             'movementFilters' => $movementFilters,
+            'mileageFilters' => $mileageFilters,
+            'mileageMovementSummaries' => $mileageMovementSummaries,
+            'mileageTotalMovement' => $mileageTotalMovement,
             'availabilityFilters' => $availabilityFilters,
-            'readings' => $module === 'mileage' ? MileageReading::with('ambulance')->latest('reading_date')->paginate(25) : collect(),
+            'activityFilters' => $activityFilters,
+            'readings' => $readings,
             'checks' => $checks,
-            'activities' => $module === 'activities' ? WeeklyActivity::latest('activity_date')->paginate(25) : collect(),
+            'activities' => $activities,
             'availabilityUnits' => collect($ambulances->pluck('fleet_number'))->merge(config('ems.availability_units'))->unique()->values(),
         ]);
     }
@@ -138,7 +207,7 @@ class EmsOperationsController extends Controller
             ->when(filled($filters['date_from'] ?? null), fn ($query) => $query->whereDate('requested_at', '>=', $filters['date_from']))
             ->when(filled($filters['date_to'] ?? null), fn ($query) => $query->whereDate('requested_at', '<=', $filters['date_to']))
             ->latest('requested_at')
-            ->paginate(10)
+            ->paginate(15)
             ->withQueryString();
 
         $ambulance->loadCount('dispatches');
@@ -298,8 +367,20 @@ class EmsOperationsController extends Controller
 
     public function destroyMileage(MileageReading $reading): RedirectResponse
     {
-        $reading->delete();
-        return redirect()->route('ems.mileage')->with('success','Mileage reading deleted. The record remains preserved in the audit trail.');
+        DB::transaction(function()use($reading){
+            $ambulance=$reading->ambulance;
+            $wasLatest=(int)MileageReading::where('ambulance_id',$reading->ambulance_id)
+                ->latest('reading_date')->latest('id')->value('id')===$reading->id;
+            $deletedOdometer=(int)$reading->odometer_km;
+            $reading->delete();
+
+            if($wasLatest&&(int)$ambulance->odometer_km===$deletedOdometer){
+                $latestRemaining=MileageReading::where('ambulance_id',$ambulance->id)
+                    ->latest('reading_date')->latest('id')->first();
+                if($latestRemaining)$ambulance->update(['odometer_km'=>$latestRemaining->odometer_km]);
+            }
+        });
+        return redirect()->route('ems.mileage')->with('success','Mileage reading deleted and mileage totals recalculated. The record remains preserved in the audit trail.');
     }
 
     public function storeAvailability(Request $request): RedirectResponse
@@ -463,7 +544,7 @@ class EmsOperationsController extends Controller
 
     public function audit()
     {
-        return view('ems.audit',['logs'=>EmsAuditLog::with('user')->latest('created_at')->paginate(100)]);
+        return view('ems.audit',['logs'=>EmsAuditLog::with('user')->latest('created_at')->paginate(15)]);
     }
 
     public function exportAudit()

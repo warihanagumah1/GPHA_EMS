@@ -12,8 +12,9 @@
 
     @if($errors->any())<x-dismissible-alert type="error">{{ $errors->first() }}</x-dismissible-alert>@endif
 
-    <section class="gpha-panel p-5">
-        <form method="GET" action="{{ route('ems.reports') }}" class="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+    <section class="gpha-panel p-5" x-data="{filtersOpen:false}">
+        <x-ems.mobile-filter-toggle />
+        <form method="GET" action="{{ route('ems.reports') }}" :class="filtersOpen ? '!grid' : 'hidden'" class="hidden gap-4 md:!grid md:grid-cols-2 lg:grid-cols-4">
             <label><span class="gpha-label">From Date <span class="text-red-600">*</span></span><input type="date" name="period_start" value="{{ $filters['period_start'] }}" class="gpha-input" required></label>
             <label><span class="gpha-label">To Date <span class="text-red-600">*</span></span><input type="date" name="period_end" value="{{ $filters['period_end'] }}" class="gpha-input" required></label>
             <label><span class="gpha-label">Ambulance</span><select name="ambulance_id" class="gpha-input"><option value="">All ambulances</option>@foreach($ambulances as $ambulance)<option value="{{ $ambulance->id }}" @selected((string)($filters['ambulance_id']??'')===(string)$ambulance->id)>{{ $ambulance->fleet_number }}</option>@endforeach</select></label>

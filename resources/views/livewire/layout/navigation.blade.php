@@ -29,7 +29,10 @@ new class extends Component {
                 <span class="flex h-16 w-16 shrink-0 overflow-hidden rounded-full bg-white p-1.5"><x-application-logo class="h-full w-full object-contain" /></span>
                 <span class="gpha-brand-title font-black tracking-tight">GPHA <span class="text-gpha-secondary">EMS</span></span>
             </a>
-            <button @click="open=!open" class="rounded bg-white/10 px-4 py-2 font-bold lg:hidden">Menu</button>
+            <button type="button" @click="open=!open" :aria-expanded="open" :aria-label="open ? 'Close navigation' : 'Open navigation'" aria-controls="mobile-primary-navigation" class="inline-flex h-12 w-12 items-center justify-center rounded-lg bg-white/10 text-white transition hover:bg-white/20 focus:outline-none focus:ring-2 focus:ring-gpha-secondary focus:ring-offset-2 focus:ring-offset-gpha-primary lg:hidden">
+                <svg x-show="!open" class="h-7 w-7" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" /></svg>
+                <svg x-cloak x-show="open" class="h-7 w-7" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" /></svg>
+            </button>
             <div class="hidden items-center gap-3 rounded-xl bg-white/10 px-5 py-3 lg:flex">
                 <span class="gpha-user-avatar flex h-12 w-12 items-center justify-center rounded-full bg-white/15 font-black text-[#9dc3e8]">{{ strtoupper($initials) }}</span>
                 <span><span class="gpha-user-name block font-black">{{ $userName }}</span><span class="gpha-user-role block font-semibold text-white/70">{{ auth()->user()?->job_title ?: 'GPHA Staff' }}</span></span>
@@ -41,7 +44,7 @@ new class extends Component {
             </div>
         </div>
 
-        <div :class="open ? 'flex' : 'hidden'" class="mt-4 flex-col gap-2 border-t border-white/20 pt-4 lg:flex lg:flex-row lg:items-center">
+        <div id="mobile-primary-navigation" :class="open ? 'flex' : 'hidden'" class="mt-4 flex-col gap-2 border-t border-white/20 pt-4 lg:flex lg:flex-row lg:items-center">
             @foreach($items as [$label,$route,$required])
                 @if($required===null || $permissions->allows(...$required))
                     <a href="{{ route($route) }}" wire:navigate class="rounded-lg px-4 py-3 font-extrabold {{ request()->routeIs($route) ? 'bg-white text-gpha-primary' : 'bg-white/10 text-white hover:bg-white/20' }}">{{ $label }}</a>

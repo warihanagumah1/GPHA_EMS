@@ -47,10 +47,11 @@
         @endif
     </section>
 
-    <section class="gpha-top-pipe rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+    <section class="gpha-top-pipe rounded-xl border border-slate-200 bg-white p-5 shadow-sm" x-data="{filtersOpen:false}">
         <div><h2 class="text-[1.2rem] font-black text-slate-900">Movement History</h2><p class="mt-1 font-semibold text-slate-500">Completed, active, and cancelled movements carried out by this ambulance.</p></div>
 
-        <form method="GET" action="{{ route('ems.ambulances.show', $ambulance) }}" class="mt-4 grid gap-3 lg:grid-cols-5">
+        <div class="mt-4"><x-ems.mobile-filter-toggle /></div>
+        <form method="GET" action="{{ route('ems.ambulances.show', $ambulance) }}" :class="filtersOpen ? '!grid' : 'hidden'" class="hidden gap-3 md:!grid lg:grid-cols-5">
             <label><span class="gpha-label">Status</span><select name="status" class="gpha-input"><option value="">All statuses</option>@foreach(['requested','completed'] as $status)<option value="{{ $status }}" @selected(request('status') === $status)>{{ str($status)->headline() }}</option>@endforeach</select></label>
             <label class="lg:col-span-2"><span class="gpha-label">Search</span><input name="search" value="{{ request('search') }}" class="gpha-input" placeholder="Reference, location, purpose, or crew lead"></label>
             <label><span class="gpha-label">From Date</span><input name="date_from" value="{{ request('date_from') }}" type="date" class="gpha-input"></label>

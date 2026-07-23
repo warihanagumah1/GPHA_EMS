@@ -213,6 +213,87 @@ class EmsWorkflowTest extends TestCase
             ->assertOk()->assertSee('EMS-FILTER-URGENT')->assertDontSee('EMS-FILTER-ROUTINE')->assertSee('Apply Filters');
     }
 
+    public function test_all_operational_lists_use_fifteen_items_per_page(): void
+    {
+        $user=User::factory()->create();
+        $ambulance=$this->ambulance();
+
+        $this->actingAs($user)->get(route('ems.ambulances'))->assertOk()
+            ->assertViewHas('fleet',fn($rows)=>$rows->perPage()===15);
+        $this->actingAs($user)->get(route('ems.dispatches'))->assertOk()
+            ->assertViewHas('dispatches',fn($rows)=>$rows->perPage()===15);
+        $this->actingAs($user)->get(route('ems.mileage'))->assertOk()
+            ->assertViewHas('readings',fn($rows)=>$rows->perPage()===15);
+        $this->actingAs($user)->get(route('ems.availability'))->assertOk()
+            ->assertViewHas('checks',fn($rows)=>$rows->perPage()===15);
+        $this->actingAs($user)->get(route('ems.activities'))->assertOk()
+            ->assertViewHas('activities',fn($rows)=>$rows->perPage()===15);
+        $this->actingAs($user)->get(route('ems.ambulances.show',$ambulance))->assertOk()
+            ->assertViewHas('movements',fn($rows)=>$rows->perPage()===15);
+        $this->actingAs($user)->get(route('ems.audit'))->assertOk()
+            ->assertViewHas('logs',fn($rows)=>$rows->perPage()===15)
+            ->assertSee('Close navigation');
+
+        foreach([route('ems.dispatches'),route('ems.mileage'),route('ems.availability'),route('ems.activities'),route('ems.ambulances.show',$ambulance),route('ems.reports')] as $filteredPage){
+            $this->actingAs($user)->get($filteredPage)->assertOk()->assertSee('Show Filters');
+        }
+    }
+
+    public function test_mileage_list_can_be_filtered_and_summarises_movement_per_ambulance(): void
+    {
+        $user=User::factory()->create();
+        $firstAmbulance=$this->ambulance(['fleet_number'=>'AMBU 1','registration_number'=>'GV 100-26','odometer_km'=>1350]);
+        $secondAmbulance=$this->ambulance(['fleet_number'=>'AMBU 2','registration_number'=>'GV 200-26','odometer_km'=>2200]);
+        foreach([['2026-07-01',1000],['2026-07-08',1125],['2026-07-15',1350]] as [$date,$odometer]){
+            MileageReading::create(['ambulance_id'=>$firstAmbulance->id,'reading_date'=>$date,'odometer_km'=>$odometer,'source'=>'weekly']);
+        }
+        foreach([['2026-07-01',2000],['2026-07-15',2200]] as [$date,$odometer]){
+            MileageReading::create(['ambulance_id'=>$secondAmbulance->id,'reading_date'=>$date,'odometer_km'=>$odometer,'source'=>'weekly']);
+        }
+        MileageReading::create(['ambulance_id'=>$firstAmbulance->id,'reading_date'=>'2026-07-20','odometer_km'=>1400,'source'=>'service']);
+
+        $this->actingAs($user)->get(route('ems.mileage',[
+            'ambulance_id'=>$firstAmbulance->id,
+            'source'=>'weekly',
+            'date_from'=>'2026-07-01',
+            'date_to'=>'2026-07-15',
+        ]))->assertOk()
+            ->assertSee('Movement Summary')
+            ->assertSee('Total fleet movement')
+            ->assertSee('350 km')
+            ->assertSee('1,350')
+            ->assertSee('1,000')
+            ->assertDontSee('2,200 km')
+            ->assertDontSee('1,400 km');
+    }
+
+    public function test_availability_and_weekly_activity_lists_can_be_filtered(): void
+    {
+        $user=User::factory()->create();
+        $readySession=(string)Str::uuid();
+        $issueSession=(string)Str::uuid();
+        AvailabilityCheck::create(['session_uuid'=>$readySession,'check_date'=>'2026-07-10','period'=>'morning','checked_at'=>'07:30','unit_name'=>'Main Clinic','responded'=>true]);
+        AvailabilityCheck::create(['session_uuid'=>$readySession,'check_date'=>'2026-07-10','period'=>'morning','checked_at'=>'07:30','unit_name'=>'KUT Terminal','responded'=>true]);
+        AvailabilityCheck::create(['session_uuid'=>$issueSession,'check_date'=>'2026-07-11','period'=>'afternoon','checked_at'=>'14:30','unit_name'=>'Main Clinic','responded'=>true]);
+        AvailabilityCheck::create(['session_uuid'=>$issueSession,'check_date'=>'2026-07-11','period'=>'afternoon','checked_at'=>'14:30','unit_name'=>'KUT Terminal','responded'=>false]);
+        WeeklyActivity::create(['activity_date'=>'2026-07-10','category'=>'training','title'=>'BLS refresher','description'=>'<p>BLS refresher training completed.</p>','requires_follow_up'=>false]);
+        WeeklyActivity::create(['activity_date'=>'2026-07-11','category'=>'inspection','title'=>'Radio inspection','description'=>'<p>Radio inspection completed.</p>','requires_follow_up'=>true,'follow_up_action'=>'Replace radio battery','follow_up_owner'=>'Fleet Lead']);
+
+        $this->actingAs($user)->get(route('ems.availability',[
+            'period'=>'afternoon','response_status'=>'has_no_response',
+        ]))->assertOk()->assertSee('11 Jul 2026')->assertDontSee('10 Jul 2026');
+        $this->actingAs($user)->get(route('ems.availability',['response_status'=>'all_responded']))
+            ->assertOk()->assertSee('10 Jul 2026')->assertDontSee('11 Jul 2026');
+
+        $this->actingAs($user)->get(route('ems.activities',[
+            'search'=>'battery','category'=>'inspection','requires_follow_up'=>'1',
+            'date_from'=>'2026-07-11','date_to'=>'2026-07-11',
+        ]))->assertOk()
+            ->assertSee('Radio inspection completed.')
+            ->assertSee('Replace radio battery')
+            ->assertDontSee('BLS refresher training completed.');
+    }
+
     public function test_complete_availability_session_and_activity_follow_up_are_captured(): void
     {
         $user=User::factory()->create();
@@ -375,7 +456,7 @@ class EmsWorkflowTest extends TestCase
         $ambulance=$this->ambulance(['odometer_km'=>3000]);
         MileageReading::create(['ambulance_id'=>$ambulance->id,'reading_date'=>'2026-07-06','odometer_km'=>2000,'source'=>'weekly','recorded_by'=>$user->id]);
         $reading=MileageReading::create(['ambulance_id'=>$ambulance->id,'reading_date'=>'2026-07-13','odometer_km'=>2500,'source'=>'weekly','recorded_by'=>$user->id]);
-        MileageReading::create(['ambulance_id'=>$ambulance->id,'reading_date'=>'2026-07-20','odometer_km'=>3000,'source'=>'weekly','recorded_by'=>$user->id]);
+        $latest=MileageReading::create(['ambulance_id'=>$ambulance->id,'reading_date'=>'2026-07-20','odometer_km'=>3000,'source'=>'weekly','recorded_by'=>$user->id]);
 
         $this->actingAs($user)->get(route('ems.mileage.show',$reading))->assertOk()->assertSee('Mileage Reading')->assertSee('2,500 km');
         $this->actingAs($user)->put(route('ems.mileage.update',$reading),[
@@ -390,6 +471,15 @@ class EmsWorkflowTest extends TestCase
         $this->actingAs($user)->delete(route('ems.mileage.destroy',$reading))->assertRedirect(route('ems.mileage'));
         $this->assertSoftDeleted('mileage_readings',['id'=>$reading->id]);
         $this->assertDatabaseHas('ems_audit_logs',['action'=>'mileage_reading.deleted','subject_id'=>$reading->id]);
+
+        $this->actingAs($user)->delete(route('ems.mileage.destroy',$latest))->assertRedirect(route('ems.mileage'));
+        $this->assertSame(2000,(int)$ambulance->fresh()->odometer_km);
+        $this->actingAs($user)->post(route('ems.reports.store'),[
+            'type'=>'mileage','period_start'=>'2026-07-01','period_end'=>'2026-07-31',
+        ])->assertRedirect();
+        $report=EmsReport::where('type','mileage')->latest('id')->firstOrFail();
+        $this->assertCount(1,$report->snapshot['readings']);
+        $this->assertSame(0,$report->snapshot['total_distance_km']);
     }
 
     private function ambulance(array $attributes = []): Ambulance

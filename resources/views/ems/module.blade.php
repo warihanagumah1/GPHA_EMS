@@ -97,8 +97,9 @@
     @endif
 
     @if($module==='dispatches')
-    <section class="gpha-panel p-5" x-data="{moreFilters:@js(filled($movementFilters['priority']??null)||filled($movementFilters['purpose']??null)||filled($movementFilters['origin']??null)||filled($movementFilters['destination']??null))}">
-        <form method="GET" action="{{ route('ems.dispatches') }}" class="space-y-4">
+    <section class="gpha-panel p-5" x-data="{filtersOpen:false,moreFilters:@js(filled($movementFilters['priority']??null)||filled($movementFilters['purpose']??null)||filled($movementFilters['origin']??null)||filled($movementFilters['destination']??null))}">
+        <x-ems.mobile-filter-toggle />
+        <form method="GET" action="{{ route('ems.dispatches') }}" :class="filtersOpen ? '!block' : 'hidden'" class="hidden space-y-4 md:!block">
             <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
                 <label><span class="gpha-label">Search</span><input name="search" value="{{ $movementFilters['search']??'' }}" class="gpha-input" placeholder="Reference or notes"></label>
                 <label><span class="gpha-label">Ambulance</span><select name="ambulance_id" class="gpha-input"><option value="">All ambulances</option>@foreach($ambulances as $ambulance)<option value="{{ $ambulance->id }}" @selected(($movementFilters['ambulance_id']??null)==$ambulance->id)>{{ $ambulance->fleet_number }}</option>@endforeach</select></label>
@@ -117,17 +118,64 @@
     </section>
     @endif
 
+    @if($module==='mileage')
+    <section class="gpha-panel p-5" x-data="{filtersOpen:false}">
+        <x-ems.mobile-filter-toggle />
+        <form method="GET" action="{{ route('ems.mileage') }}" :class="filtersOpen ? '!block' : 'hidden'" class="hidden space-y-4 md:!block">
+            <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                <label><span class="gpha-label">Ambulance</span><select name="ambulance_id" class="gpha-input"><option value="">All ambulances</option>@foreach($ambulances as $ambulance)<option value="{{ $ambulance->id }}" @selected(($mileageFilters['ambulance_id']??null)==$ambulance->id)>{{ $ambulance->fleet_number }}</option>@endforeach</select></label>
+                <label><span class="gpha-label">Reading Type</span><select name="source" class="gpha-input"><option value="">All reading types</option><option value="weekly" @selected(($mileageFilters['source']??'')==='weekly')>Scheduled weekly</option><option value="service" @selected(($mileageFilters['source']??'')==='service')>Service</option></select></label>
+                <label><span class="gpha-label">From Date</span><input type="date" name="date_from" value="{{ $mileageFilters['date_from']??'' }}" class="gpha-input"></label>
+                <label><span class="gpha-label">To Date</span><input type="date" name="date_to" value="{{ $mileageFilters['date_to']??'' }}" class="gpha-input"></label>
+            </div>
+            <div class="flex justify-end gap-2"><a href="{{ route('ems.mileage') }}" class="gpha-button-secondary">Clear</a><button class="gpha-button-primary">Apply Filters</button></div>
+        </form>
+    </section>
+
+    <section class="gpha-panel overflow-hidden">
+        <div class="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <div><h2 class="text-xl font-black">Movement Summary</h2><p class="mt-1 font-semibold text-slate-500">Calculated from the first and last odometer readings in the filtered period.</p></div>
+            <div class="rounded-xl bg-blue-50 px-5 py-3 text-right"><p class="text-xs font-extrabold uppercase tracking-wide text-blue-700">Total fleet movement</p><p class="text-2xl font-black text-gpha-primary">{{ number_format($mileageTotalMovement) }} km</p></div>
+        </div>
+        <div class="overflow-x-auto"><table class="gpha-table"><thead><tr><th>Ambulance</th><th>Period Covered</th><th>Readings</th><th>Calculation</th><th>Total Movement</th></tr></thead><tbody>
+            @forelse($mileageMovementSummaries as $summary)<tr>
+                <td class="font-extrabold">{{ $summary['ambulance'] }}</td>
+                <td>{{ $summary['first_date']->format('d M Y') }}@if(!$summary['first_date']->equalTo($summary['last_date'])) → {{ $summary['last_date']->format('d M Y') }}@endif</td>
+                <td>{{ number_format($summary['reading_count']) }}</td>
+                <td class="font-semibold text-slate-600">@if($summary['movement_km']!==null){{ number_format($summary['closing_odometer']) }} − {{ number_format($summary['opening_odometer']) }}@else—@endif</td>
+                <td>@if($summary['movement_km']!==null)<span class="text-lg font-black text-gpha-primary">{{ number_format($summary['movement_km']) }} km</span>@else<span class="font-bold text-amber-700">Another reading is needed</span>@endif</td>
+            </tr>@empty<tr><td colspan="5" class="py-10 text-center text-slate-500">No mileage readings match these filters.</td></tr>@endforelse
+        </tbody></table></div>
+    </section>
+    @endif
+
     @if($module==='availability')
-    <section class="gpha-panel p-5">
-        <form method="GET" action="{{ route('ems.availability') }}" class="space-y-4">
-            <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+    <section class="gpha-panel p-5" x-data="{filtersOpen:false}">
+        <x-ems.mobile-filter-toggle />
+        <form method="GET" action="{{ route('ems.availability') }}" :class="filtersOpen ? '!block' : 'hidden'" class="hidden space-y-4 md:!block">
+            <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                 <label><span class="gpha-label">From Date</span><input type="date" name="date_from" value="{{ $availabilityFilters['date_from']??'' }}" class="gpha-input"></label>
                 <label><span class="gpha-label">To Date</span><input type="date" name="date_to" value="{{ $availabilityFilters['date_to']??'' }}" class="gpha-input"></label>
                 <label><span class="gpha-label">Session</span><select name="period" class="gpha-input"><option value="">All sessions</option>@foreach(['morning','afternoon'] as $value)<option value="{{ $value }}" @selected(($availabilityFilters['period']??'')===$value)>{{ str($value)->headline() }}</option>@endforeach</select></label>
-                <label><span class="gpha-label">Unit</span><select name="unit_name" class="gpha-input"><option value="">All units</option>@foreach($availabilityUnits as $unit)<option value="{{ $unit }}" @selected(($availabilityFilters['unit_name']??'')===$unit)>{{ $unit }}</option>@endforeach</select></label>
-                <label><span class="gpha-label">Response</span><select name="responded" class="gpha-input"><option value="">All responses</option><option value="1" @selected(($availabilityFilters['responded']??'')==='1')>Responded</option><option value="0" @selected(($availabilityFilters['responded']??'')==='0')>No response</option></select></label>
+                <label><span class="gpha-label">Check Result</span><select name="response_status" class="gpha-input"><option value="">All results</option><option value="all_responded" @selected(($availabilityFilters['response_status']??'')==='all_responded')>All units responded</option><option value="has_no_response" @selected(($availabilityFilters['response_status']??'')==='has_no_response')>Has no response</option></select></label>
             </div>
             <div class="flex justify-end gap-2"><a href="{{ route('ems.availability') }}" class="gpha-button-secondary">Clear</a><button class="gpha-button-primary">Apply Filters</button></div>
+        </form>
+    </section>
+    @endif
+
+    @if($module==='activities')
+    <section class="gpha-panel p-5" x-data="{filtersOpen:false}">
+        <x-ems.mobile-filter-toggle />
+        <form method="GET" action="{{ route('ems.activities') }}" :class="filtersOpen ? '!block' : 'hidden'" class="hidden space-y-4 md:!block">
+            <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+                <label><span class="gpha-label">Search</span><input name="search" value="{{ $activityFilters['search']??'' }}" class="gpha-input" placeholder="Activity, outcome, or owner"></label>
+                <label><span class="gpha-label">Category</span><select name="category" class="gpha-input"><option value="">All categories</option>@foreach(['operations','meeting','training','inspection','administration','outreach'] as $category)<option value="{{ $category }}" @selected(($activityFilters['category']??'')===$category)>{{ str($category)->headline() }}</option>@endforeach</select></label>
+                <label><span class="gpha-label">Follow-up</span><select name="requires_follow_up" class="gpha-input"><option value="">All activities</option><option value="1" @selected(($activityFilters['requires_follow_up']??'')==='1')>Requires follow-up</option><option value="0" @selected(($activityFilters['requires_follow_up']??'')==='0')>Closed / no follow-up</option></select></label>
+                <label><span class="gpha-label">From Date</span><input type="date" name="date_from" value="{{ $activityFilters['date_from']??'' }}" class="gpha-input"></label>
+                <label><span class="gpha-label">To Date</span><input type="date" name="date_to" value="{{ $activityFilters['date_to']??'' }}" class="gpha-input"></label>
+            </div>
+            <div class="flex justify-end gap-2"><a href="{{ route('ems.activities') }}" class="gpha-button-secondary">Clear</a><button class="gpha-button-primary">Apply Filters</button></div>
         </form>
     </section>
     @endif
@@ -141,7 +189,7 @@
             @elseif($module==='availability')<th>Date / Time</th><th>Session</th><th>Units Checked</th><th>Responded</th><th>No Response</th><th class="gpha-actions-heading">Actions</th>
             @else<th>Date</th><th>Activity</th><th>Category</th><th>Outcome</th><th>Follow-up</th><th class="gpha-actions-heading">Actions</th>@endif
         </tr></thead><tbody>
-            @php($rows=match($module){'ambulances'=>$ambulances,'dispatches'=>$dispatches,'mileage'=>$readings,'availability'=>$checks,default=>$activities})
+            @php($rows=match($module){'ambulances'=>$fleet,'dispatches'=>$dispatches,'mileage'=>$readings,'availability'=>$checks,default=>$activities})
             @forelse($rows as $row)<tr>
                 @if($module==='ambulances')<x-ems.ambulance-row :ambulance="$row" :can-manage="$canManage" />
                 @elseif($module==='dispatches')<td><a href="{{ route('ems.dispatches.show',$row) }}" class="font-extrabold text-gpha-primary hover:underline">{{ $row->reference }}</a></td><td>{{ $row->requested_at?->format('d M Y H:i') }}</td><td>{{ $row->ambulance?->fleet_number }}</td><td>{{ $row->origin }} → {{ $row->destination }}<p class="text-sm font-semibold text-slate-500">{{ $row->purpose }}</p></td><td><x-ems.status-badge :status="$row->priority" /></td><td><x-ems.status-badge :status="$row->status" /></td><x-ems.movement-row :movement="$row" :can-manage="$canManage" actions-only />
