@@ -474,9 +474,8 @@ class EmsOperationsController extends Controller
         ]);
         [$periodStart,$periodEnd,$periodLabel]=$this->reportPeriodDates($data);
         [$snapshot,$summary,$recommendations]=$this->buildPrintableReport($data['type'],$periodStart,$periodEnd);
-        if ($periodLabel !== null) {
-            $snapshot['reporting_period_label']=$periodLabel;
-        }
+        $snapshot['reporting_period_label']=$periodLabel??'Custom Dates';
+        $snapshot['reporting_period_cadence']=$this->reportCadence($data['period_preset'],$periodStart,$periodEnd);
         $report=EmsReport::create([
             'type'=>$data['type'],
             'period_start'=>$periodStart,
@@ -736,6 +735,27 @@ class EmsOperationsController extends Controller
         };
 
         return [$start->toDateString(),$end->toDateString(),$label];
+    }
+
+    private function reportCadence(string $preset,string $periodStart,string $periodEnd): string
+    {
+        return match($preset){
+            'today','yesterday'=>'Daily',
+            'this_week','last_week'=>'Weekly',
+            'this_month','last_month'=>'Monthly',
+            'this_quarter','last_quarter'=>'Quarterly',
+            'last_six_months'=>'Six-Month',
+            'this_year','last_year'=>'Annual',
+            default=>match((int)Carbon::parse($periodStart)->diffInDays(Carbon::parse($periodEnd))+1){
+                1=>'Daily',
+                7=>'Weekly',
+                28,29,30,31=>'Monthly',
+                89,90,91,92=>'Quarterly',
+                181,182,183,184=>'Six-Month',
+                365,366=>'Annual',
+                default=>'Custom Period',
+            },
+        };
     }
 
     private function buildMileageReport(string $periodStart, string $periodEnd): array

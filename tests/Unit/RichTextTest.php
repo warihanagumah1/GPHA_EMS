@@ -14,4 +14,12 @@ class RichTextTest extends TestCase
         $this->assertSame('<p><strong>Routine</strong></p><ul><li>Check</li></ul>',$clean);
         $this->assertSame('Routine Check',RichText::plain($clean));
     }
+
+    public function test_it_wraps_bare_list_items_in_a_bulleted_list(): void
+    {
+        $this->assertSame(
+            '<ul><li>First detailed note</li><li>Second detailed note</li></ul>',
+            RichText::clean('<li>First detailed note</li><li>Second detailed note</li>'),
+        );
+    }
 }

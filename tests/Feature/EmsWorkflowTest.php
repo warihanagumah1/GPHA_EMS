@@ -284,8 +284,9 @@ class EmsWorkflowTest extends TestCase
         $user=User::factory()->create();
         $firstAmbulance=$this->ambulance(['fleet_number'=>'AMBU 1','registration_number'=>'GV 100-26','odometer_km'=>1350]);
         $secondAmbulance=$this->ambulance(['fleet_number'=>'AMBU 2','registration_number'=>'GV 200-26','odometer_km'=>2200]);
+        $longNotes='An unusually high odometer reading was recorded after several emergency movements between the terminals, Main Clinic, and the receiving hospital.';
         foreach([['2026-07-01',1000],['2026-07-08',1125],['2026-07-15',1350]] as [$date,$odometer]){
-            MileageReading::create(['ambulance_id'=>$firstAmbulance->id,'reading_date'=>$date,'odometer_km'=>$odometer,'source'=>'weekly']);
+            MileageReading::create(['ambulance_id'=>$firstAmbulance->id,'reading_date'=>$date,'odometer_km'=>$odometer,'source'=>'weekly','notes'=>$date==='2026-07-15'?$longNotes:null]);
         }
         foreach([['2026-07-01',2000],['2026-07-15',2200]] as [$date,$odometer]){
             MileageReading::create(['ambulance_id'=>$secondAmbulance->id,'reading_date'=>$date,'odometer_km'=>$odometer,'source'=>'weekly']);
@@ -303,6 +304,8 @@ class EmsWorkflowTest extends TestCase
             ->assertSee('350 km')
             ->assertSee('1,350')
             ->assertSee('1,000')
+            ->assertSee((string)str($longNotes)->squish()->limit(120))
+            ->assertSee('title="'.$longNotes.'"',false)
             ->assertDontSee('2,200 km')
             ->assertDontSee('1,400 km');
     }
@@ -470,9 +473,12 @@ class EmsWorkflowTest extends TestCase
                 ->assertSee('Summary of Findings')
                 ->assertSee('Recommendations')
                 ->assertSee('Print / Save PDF')
+                ->assertSee('.table-wrap table{border:1px solid #7e95b4}',false)
+                ->assertSee('class="print-table-footer"',false)
                 ->assertDontSee('Report ID:')
                 ->assertDontSee('Awaiting approval')
                 ->assertDontSee('Draft');
+            if($type==='weekly_activity')$printResponse->assertSee('class="activity-category"',false);
             if($type==='availability')$printResponse->assertSee('Unit Responses')->assertSee('Main Clinic');
         }
     }
@@ -483,21 +489,21 @@ class EmsWorkflowTest extends TestCase
         \Carbon\Carbon::setTestNow('2026-08-19 10:00:00');
         try{
             $expectedPeriods=[
-                'today'=>['2026-08-19','2026-08-19','Today'],
-                'yesterday'=>['2026-08-18','2026-08-18','Yesterday'],
-                'this_week'=>['2026-08-16','2026-08-19','This Week'],
-                'last_week'=>['2026-08-09','2026-08-15','Last Week'],
-                'this_month'=>['2026-08-01','2026-08-19','This Month'],
-                'last_month'=>['2026-07-01','2026-07-31','Last Month'],
-                'this_quarter'=>['2026-07-01','2026-08-19','This Quarter'],
-                'last_quarter'=>['2026-04-01','2026-06-30','Last Quarter'],
-                'last_six_months'=>['2026-02-01','2026-07-31','Last 6 Months'],
-                'this_year'=>['2026-01-01','2026-08-19','This Year'],
-                'last_year'=>['2025-01-01','2025-12-31','Last Year'],
+                'today'=>['2026-08-19','2026-08-19','Today','Daily'],
+                'yesterday'=>['2026-08-18','2026-08-18','Yesterday','Daily'],
+                'this_week'=>['2026-08-16','2026-08-19','This Week','Weekly'],
+                'last_week'=>['2026-08-09','2026-08-15','Last Week','Weekly'],
+                'this_month'=>['2026-08-01','2026-08-19','This Month','Monthly'],
+                'last_month'=>['2026-07-01','2026-07-31','Last Month','Monthly'],
+                'this_quarter'=>['2026-07-01','2026-08-19','This Quarter','Quarterly'],
+                'last_quarter'=>['2026-04-01','2026-06-30','Last Quarter','Quarterly'],
+                'last_six_months'=>['2026-02-01','2026-07-31','Last 6 Months','Six-Month'],
+                'this_year'=>['2026-01-01','2026-08-19','This Year','Annual'],
+                'last_year'=>['2025-01-01','2025-12-31','Last Year','Annual'],
             ];
 
             foreach(['mileage','weekly_activity','availability'] as $type){
-                foreach($expectedPeriods as $preset=>[$expectedStart,$expectedEnd,$expectedLabel]){
+                foreach($expectedPeriods as $preset=>[$expectedStart,$expectedEnd,$expectedLabel,$expectedCadence]){
                     $this->actingAs($user)->post(route('ems.reports.store'),[
                         'type'=>$type,
                         'period_preset'=>$preset,
@@ -506,6 +512,14 @@ class EmsWorkflowTest extends TestCase
                     $this->assertSame($expectedStart,$report->period_start->toDateString());
                     $this->assertSame($expectedEnd,$report->period_end->toDateString());
                     $this->assertSame($expectedLabel,$report->snapshot['reporting_period_label']);
+                    $this->assertSame($expectedCadence,$report->snapshot['reporting_period_cadence']);
+                    if($type==='weekly_activity'&&$preset==='last_quarter'){
+                        $this->actingAs($user)->get(route('ems.reports.print',$report))->assertOk()
+                            ->assertSee('Quarterly Operational Activities Report')
+                            ->assertSee('01 Apr 2026, 00:00')
+                            ->assertSee('30 Jun 2026, 23:59')
+                            ->assertSee('Quarterly reporting period:');
+                    }
                 }
             }
 

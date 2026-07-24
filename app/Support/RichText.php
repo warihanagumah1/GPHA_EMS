@@ -13,6 +13,9 @@ class RichText
         $value=preg_replace('#<(script|style)[^>]*>.*?</\1>#is','',$value) ?? '';
         $value=strip_tags($value,self::ALLOWED_TAGS);
         $value=preg_replace('/<(p|br|strong|b|u|em|i|ul|ol|li)\b[^>]*>/i','<$1>',$value) ?? '';
+        if (preg_match('/<li>/i',$value) && !preg_match('/<(ul|ol)>/i',$value)) {
+            $value='<ul>'.$value.'</ul>';
+        }
         return trim($value);
     }
 
