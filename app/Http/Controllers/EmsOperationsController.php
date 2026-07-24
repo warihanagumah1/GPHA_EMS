@@ -59,7 +59,6 @@ class EmsOperationsController extends Controller
                 ->when(filled($movementFilters['search'] ?? null), function ($query) use ($movementFilters) {
                     $search = trim($movementFilters['search']);
                     $query->where(fn ($query) => $query->where('reference','like',"%{$search}%")
-                        ->orWhere('crew_lead','like',"%{$search}%")
                         ->orWhere('notes','like',"%{$search}%"));
                 })
                 ->when(filled($movementFilters['ambulance_id'] ?? null), fn ($query) => $query->where('ambulance_id',$movementFilters['ambulance_id']))
@@ -199,8 +198,7 @@ class EmsOperationsController extends Controller
                     $query->where('reference', 'like', "%{$search}%")
                         ->orWhere('origin', 'like', "%{$search}%")
                         ->orWhere('destination', 'like', "%{$search}%")
-                        ->orWhere('purpose', 'like', "%{$search}%")
-                        ->orWhere('crew_lead', 'like', "%{$search}%");
+                        ->orWhere('purpose', 'like', "%{$search}%");
                 });
             })
             ->when(filled($filters['status'] ?? null), fn ($query) => $query->where('status', $filters['status']))
@@ -467,9 +465,29 @@ class EmsOperationsController extends Controller
 
     public function generateReport(Request $request): RedirectResponse
     {
-        $data=$request->validate(['type'=>'required|in:mileage,weekly_activity,availability','period_start'=>'required|date','period_end'=>'required|date|after_or_equal:period_start']);
-        [$snapshot,$summary,$recommendations]=$this->buildPrintableReport($data['type'],$data['period_start'],$data['period_end']);
-        $report=EmsReport::create($data+['uuid'=>(string)Str::uuid(),'status'=>'draft','snapshot'=>$snapshot,'summary'=>$summary,'recommendations'=>$recommendations,'prepared_by'=>auth()->id()]);
+        $request->merge(['period_preset'=>$request->input('period_preset','custom')]);
+        $data=$request->validate([
+            'type'=>['required',Rule::in(['mileage','weekly_activity','availability'])],
+            'period_preset'=>['required',Rule::in(['today','yesterday','this_week','last_week','this_month','last_month','this_quarter','last_quarter','last_six_months','this_year','last_year','custom'])],
+            'period_start'=>['nullable','required_if:period_preset,custom','date'],
+            'period_end'=>['nullable','required_if:period_preset,custom','date','after_or_equal:period_start'],
+        ]);
+        [$periodStart,$periodEnd,$periodLabel]=$this->reportPeriodDates($data);
+        [$snapshot,$summary,$recommendations]=$this->buildPrintableReport($data['type'],$periodStart,$periodEnd);
+        if ($periodLabel !== null) {
+            $snapshot['reporting_period_label']=$periodLabel;
+        }
+        $report=EmsReport::create([
+            'type'=>$data['type'],
+            'period_start'=>$periodStart,
+            'period_end'=>$periodEnd,
+            'uuid'=>(string)Str::uuid(),
+            'status'=>'draft',
+            'snapshot'=>$snapshot,
+            'summary'=>$summary,
+            'recommendations'=>$recommendations,
+            'prepared_by'=>auth()->id(),
+        ]);
         return redirect()->route('ems.reports.print',$report);
     }
 
@@ -479,7 +497,7 @@ class EmsOperationsController extends Controller
         $query = $this->filteredMovements($filters);
         $records = (clone $query)->oldest('requested_at')->get();
         $completed = $records->where('status', 'completed');
-        $totalDistance = $completed->sum(fn (Dispatch $movement) => max(0, $movement->distance_km ?? 0));
+        $ambulances = Ambulance::orderBy('fleet_number')->get();
         $statusOrder = ['requested', 'completed'];
         $statusCounts = collect($statusOrder)->mapWithKeys(fn ($status) => [$status => $records->where('status', $status)->count()]);
         $dailyCounts = $records->groupBy(fn (Dispatch $movement) => $movement->requested_at->format('Y-m-d'))
@@ -490,12 +508,13 @@ class EmsOperationsController extends Controller
 
         return view('ems.reports.dashboard', [
             'filters' => $filters,
-            'ambulances' => Ambulance::orderBy('fleet_number')->get(),
+            'ambulances' => $ambulances,
             'totalMovements' => $records->count(),
             'completedMovements' => $completed->count(),
             'activeMovements' => $records->whereIn('status', ['requested', 'dispatched', 'arrived'])->count(),
             'criticalMovements' => $records->where('priority', 'critical')->count(),
-            'totalDistance' => $totalDistance,
+            'ambulancesUsed' => $records->pluck('ambulance_id')->filter()->unique()->count(),
+            'totalAmbulances' => $ambulances->count(),
             'completionRate' => $records->isEmpty() ? 0 : round(($completed->count() / $records->count()) * 100, 1),
             'statusCounts' => $statusCounts,
             'dailyCounts' => $dailyCounts,
@@ -514,10 +533,10 @@ class EmsOperationsController extends Controller
 
         return response()->streamDownload(function () use ($movements) {
             $out = fopen('php://output', 'w');
-            fputcsv($out, ['Reference','Date','Ambulance','Registration','Origin','Destination','Case Category','Priority','Status','Crew Lead','Distance (km)']);
+            fputcsv($out, ['Reference','Date','Ambulance','Registration','Origin','Destination','Case Category','Priority','Status']);
             $movements->chunk(500, function ($rows) use ($out) {
                 foreach ($rows as $movement) {
-                    fputcsv($out, [$movement->reference,$movement->requested_at?->format('Y-m-d H:i'),$movement->ambulance?->fleet_number,$movement->ambulance?->registration_number,$movement->origin,$movement->destination,$movement->purpose,$movement->priority,$movement->status,$movement->crew_lead,$movement->distance_km]);
+                    fputcsv($out, [$movement->reference,$movement->requested_at?->format('Y-m-d H:i'),$movement->ambulance?->fleet_number,$movement->ambulance?->registration_number,$movement->origin,$movement->destination,$movement->purpose,$movement->priority,$movement->status]);
                 }
             });
             fclose($out);
@@ -644,16 +663,23 @@ class EmsOperationsController extends Controller
 
     private function reportFilters(Request $request): array
     {
-        $request->merge([
-            'period_start' => $request->input('period_start', today()->subDays(29)->toDateString()),
-            'period_end' => $request->input('period_end', today()->toDateString()),
-        ]);
-
-        return $request->validate([
-            'period_start' => ['required', 'date'],
-            'period_end' => ['required', 'date', 'after_or_equal:period_start'],
+        $preset=$request->filled('period_preset')
+            ? $request->input('period_preset')
+            : ($request->filled('period_start') || $request->filled('period_end') ? 'custom' : 'this_week');
+        $request->merge(['period_preset'=>$preset]);
+        $filters=$request->validate([
+            'period_preset'=>['required',Rule::in(['today','yesterday','this_week','last_week','this_month','last_month','this_quarter','last_quarter','last_six_months','this_year','last_year','custom'])],
+            'period_start'=>['nullable','required_if:period_preset,custom','date'],
+            'period_end'=>['nullable','required_if:period_preset,custom','date','after_or_equal:period_start'],
             'ambulance_id' => ['nullable', 'integer', 'exists:ambulances,id'],
             'status' => ['nullable', Rule::in(['requested','completed'])],
+        ]);
+        [$periodStart,$periodEnd,$periodLabel]=$this->reportPeriodDates($filters);
+
+        return array_merge($filters,[
+            'period_start'=>$periodStart,
+            'period_end'=>$periodEnd,
+            'period_label'=>$periodLabel??'Custom Dates',
         ]);
     }
 
@@ -672,6 +698,44 @@ class EmsOperationsController extends Controller
             'availability' => $this->buildAvailabilityReport($periodStart, $periodEnd),
             default => $this->buildWeeklyOperationsReport($periodStart, $periodEnd),
         };
+    }
+
+    private function reportPeriodDates(array $data): array
+    {
+        if ($data['period_preset'] === 'custom') {
+            return [$data['period_start'],$data['period_end'],null];
+        }
+
+        $today = today();
+        [$start,$end] = match ($data['period_preset']) {
+            'today' => [$today->copy(),$today->copy()],
+            'yesterday' => [$today->copy()->subDay(),$today->copy()->subDay()],
+            'this_week' => [$today->copy()->startOfWeek(Carbon::SUNDAY),$today->copy()],
+            'last_week' => [$today->copy()->subWeek()->startOfWeek(Carbon::SUNDAY),$today->copy()->subWeek()->endOfWeek(Carbon::SATURDAY)],
+            'this_month' => [$today->copy()->startOfMonth(),$today->copy()],
+            'last_month' => [$today->copy()->subMonthNoOverflow()->startOfMonth(),$today->copy()->subMonthNoOverflow()->endOfMonth()],
+            'this_quarter' => [$today->copy()->startOfQuarter(),$today->copy()],
+            'last_quarter' => [$today->copy()->subQuarter()->startOfQuarter(),$today->copy()->subQuarter()->endOfQuarter()],
+            'last_six_months' => [$today->copy()->startOfMonth()->subMonths(6),$today->copy()->startOfMonth()->subDay()],
+            'this_year' => [$today->copy()->startOfYear(),$today->copy()],
+            'last_year' => [$today->copy()->subYear()->startOfYear(),$today->copy()->subYear()->endOfYear()],
+        };
+
+        $label=match($data['period_preset']){
+            'today'=>'Today',
+            'yesterday'=>'Yesterday',
+            'this_week'=>'This Week',
+            'last_week'=>'Last Week',
+            'this_month'=>'This Month',
+            'last_month'=>'Last Month',
+            'this_quarter'=>'This Quarter',
+            'last_quarter'=>'Last Quarter',
+            'last_six_months'=>'Last 6 Months',
+            'this_year'=>'This Year',
+            'last_year'=>'Last Year',
+        };
+
+        return [$start->toDateString(),$end->toDateString(),$label];
     }
 
     private function buildMileageReport(string $periodStart, string $periodEnd): array

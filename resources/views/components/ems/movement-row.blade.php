@@ -6,11 +6,11 @@
 <td><x-ems.status-badge :status="$movement->priority" /></td>
 <td><x-ems.status-badge :status="$movement->status" /></td>
 @endunless
+@if($canManage)
 <td class="gpha-actions-cell">
     <div class="relative inline-block text-left" x-data="{open:false,menuTop:0,menuLeft:0,positionMenu(){const r=this.$refs.trigger.getBoundingClientRect(),w=224,h=230,p=8;this.menuTop=Math.max(p,Math.min(r.top,window.innerHeight-h-p));this.menuLeft=r.right+p+w<=window.innerWidth-p?r.right+p:Math.max(p,r.left-w-p)}}" @resize.window="open&&positionMenu()" @scroll.window="open&&positionMenu()" @keydown.escape.window="open=false">
         <x-ems.action-trigger x-ref="trigger" x-bind:class="{'is-open':open}" @click.stop="positionMenu();open=!open" label="Movement actions" />
         <div x-cloak x-show="open" x-transition @click.outside="open=false" :style="`top:${menuTop}px;left:${menuLeft}px`" class="gpha-floating-action-menu">
-            <a href="{{ route('ems.dispatches.show', $movement) }}" class="block w-full px-4 py-2 text-left font-semibold text-slate-700 hover:bg-slate-50 hover:text-gpha-primary">View</a>
             @if($canManage)
                 <a href="{{ route('ems.dispatches.edit', $movement) }}" class="block w-full px-4 py-2 text-left font-semibold text-gpha-primary hover:bg-blue-50">Edit</a>
                 @if($movement->status==='requested')
@@ -21,3 +21,4 @@
         </div>
     </div>
 </td>
+@endif

@@ -3,9 +3,11 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 @php
-    $title=match($report->type){'mileage'=>'Weekly Mileage Report','availability'=>'EMS Weekly Availability Report',default=>'Weekly Report'};
+    $periodDays=(int)$report->period_start->diffInDays($report->period_end)+1;
     $snapshot=$report->snapshot??[];
-    $description=match($report->type){'mileage'=>'Weekly odometer readings, kilometres travelled, and daily-average performance for GPHA ambulances.','availability'=>'Radio communication response and operational availability checks for EMS units and partner departments.','weekly_activity'=>'Weekly departmental activities, meetings, training, inspections, key engagements, and follow-up items.',default=>'EMS operational report.'};
+    $cadence=$snapshot['reporting_period_label']??match(true){$periodDays===1=>'Daily',$periodDays===7=>'Weekly',$periodDays>=28&&$periodDays<=31=>'Monthly',$periodDays>=89&&$periodDays<=92=>'Quarterly',$periodDays>=181&&$periodDays<=184=>'Six-Month',$periodDays>=365&&$periodDays<=366=>'Annual',default=>'Custom Period'};
+    $title=match($report->type){'mileage'=>$cadence.' Ambulance Mileage Report','availability'=>$cadence.' Radio & Availability Report',default=>$cadence.' Operational Activities Report'};
+    $description=match($report->type){'mileage'=>'Odometer readings, kilometres travelled, and daily-average performance for GPHA ambulances during the reporting period.','availability'=>'Radio communication response and operational availability checks for EMS units and partner departments.','weekly_activity'=>'Departmental activities, meetings, training, inspections, key engagements, and follow-up items during the reporting period.',default=>'EMS operational report.'};
 @endphp
 <title>{{ $title }} · {{ $report->period_end->format('d M Y') }}</title>
 <style>

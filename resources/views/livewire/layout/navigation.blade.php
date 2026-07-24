@@ -22,7 +22,7 @@ new class extends Component {
     $userName = auth()->user()?->name ?: 'GPHA Staff';
     $initials = str($userName)->explode(' ')->filter()->take(2)->map(fn($part) => str($part)->substr(0, 1))->join('');
 @endphp
-<nav x-data="{ open:false, logsOpen:false }" class="sticky top-0 z-40 border-t-[3px] border-gpha-secondary bg-gpha-primary text-white shadow-md">
+<nav x-data="{ open:false, logsOpen:false, logsCloseTimer:null, desktopLogs(){ return window.matchMedia('(min-width: 1024px)').matches }, openLogs(){ if(this.desktopLogs()){ clearTimeout(this.logsCloseTimer); this.logsOpen=true } }, closeLogs(){ if(this.desktopLogs()){ clearTimeout(this.logsCloseTimer); this.logsCloseTimer=setTimeout(() => this.logsOpen=false, 150) } } }" class="sticky top-0 z-40 border-t-[3px] border-gpha-secondary bg-gpha-primary text-white shadow-md">
     <div class="mx-auto max-w-7xl px-4 py-4 sm:px-6 lg:px-8">
         <div class="flex items-center justify-between gap-5">
             <a href="{{ route('dashboard') }}" wire:navigate class="flex items-center gap-4">
@@ -51,12 +51,12 @@ new class extends Component {
                 @endif
             @endforeach
             @if($permissions->allows('ReadinessAndActivities','View') || $permissions->allows('AmbulanceFleet','View'))
-                <div class="relative" @click.outside="logsOpen=false">
+                <div class="relative" @mouseenter="openLogs()" @mouseleave="closeLogs()" @click.outside="logsOpen=false">
                     <button type="button" @click="logsOpen=!logsOpen" class="flex w-full items-center justify-between gap-2 rounded-lg px-4 py-3 font-extrabold {{ request()->routeIs('ems.mileage','ems.availability','ems.activities') ? 'bg-white text-gpha-primary' : 'bg-white/10 text-white hover:bg-white/20' }}">
                         Operations Logs
                         <svg class="h-4 w-4" :class="logsOpen?'rotate-180':''" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z" clip-rule="evenodd"/></svg>
                     </button>
-                    <div x-cloak x-show="logsOpen" x-transition class="mt-2 min-w-64 overflow-hidden rounded-xl border border-slate-200 bg-white p-2 text-slate-800 shadow-xl lg:absolute lg:left-0 lg:top-full lg:z-50">
+                    <div x-cloak x-show="logsOpen" x-transition @mouseenter="openLogs()" class="mt-2 min-w-64 overflow-hidden rounded-xl border border-slate-200 bg-white p-2 text-slate-800 shadow-xl lg:absolute lg:left-0 lg:top-full lg:z-50">
                         @if($permissions->allows('AmbulanceFleet','View'))<a href="{{ route('ems.mileage') }}" wire:navigate class="block rounded-lg px-4 py-3 font-bold hover:bg-slate-100">Mileage Readings</a>@endif
                         @if($permissions->allows('ReadinessAndActivities','View'))<a href="{{ route('ems.availability') }}" wire:navigate class="block rounded-lg px-4 py-3 font-bold hover:bg-slate-100">Availability Checks</a><a href="{{ route('ems.activities') }}" wire:navigate class="block rounded-lg px-4 py-3 font-bold hover:bg-slate-100">Weekly Activities</a>@endif
                     </div>

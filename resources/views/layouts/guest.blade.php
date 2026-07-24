@@ -7,8 +7,8 @@
 
         <title>{{ config('app.name', 'GPHA EMS') }}</title>
 
-        <link rel="icon" type="image/jpeg" href="{{ asset('images/gpha-favicon.jpg') }}">
-        <link rel="apple-touch-icon" href="{{ asset('images/gpha-favicon.jpg') }}">
+        <link rel="icon" type="image/png" href="{{ asset('images/gpha-favicon-rounded.png') }}">
+        <link rel="apple-touch-icon" href="{{ asset('images/gpha-favicon-rounded.png') }}">
 
         <!-- Fonts -->
         <link rel="preconnect" href="https://fonts.bunny.net">

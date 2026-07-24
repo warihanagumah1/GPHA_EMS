@@ -110,6 +110,9 @@ class EmsWorkflowTest extends TestCase
         $this->actingAs($user)->get(route('ems.ambulances.show', $ambulance))
             ->assertOk()
             ->assertSee('Movement History')
+            ->assertDontSee('Next Service')
+            ->assertDontSee('Distance')
+            ->assertDontSee('Crew Lead')
             ->assertSee('EMS-260720-TEST1');
     }
 
@@ -194,12 +197,49 @@ class EmsWorkflowTest extends TestCase
             ->assertOk()
             ->assertSee('Operational Reports')
             ->assertSee('Movement Trend')
-            ->assertSee('25 km')
+            ->assertSee('Ambulances Used')
+            ->assertDontSee('Recorded Distance')
             ->assertDontSee('Fleet Performance')
             ->assertDontSee('Movement Details')
             ->assertDontSee('Generated Printable Reports');
 
-        $this->actingAs($user)->get(route('ems.reports.operations.export', $filters))->assertDownload();
+        $export=$this->actingAs($user)->get(route('ems.reports.operations.export', $filters))->assertDownload();
+        $this->assertStringNotContainsString('Distance (km)',$export->streamedContent());
+        $this->assertStringNotContainsString('Crew Lead',$export->streamedContent());
+    }
+
+    public function test_entire_reports_dashboard_uses_easy_reporting_period_filters(): void
+    {
+        $user=User::factory()->create();
+        $ambulance=$this->ambulance();
+        \Carbon\Carbon::setTestNow('2026-08-19 10:00:00');
+        try{
+            Dispatch::create(['reference'=>'EMS-JULY','ambulance_id'=>$ambulance->id,'origin'=>'Main Clinic','destination'=>'Clinic B','purpose'=>'Patient transfer','priority'=>'routine','status'=>'completed','requested_at'=>'2026-07-15 09:00:00','completed_at'=>'2026-07-15 10:00:00','odometer_start'=>100,'odometer_end'=>125]);
+            Dispatch::create(['reference'=>'EMS-AUGUST','ambulance_id'=>$ambulance->id,'origin'=>'Main Clinic','destination'=>'Clinic B','purpose'=>'Patient transfer','priority'=>'routine','status'=>'completed','requested_at'=>'2026-08-10 09:00:00','completed_at'=>'2026-08-10 10:00:00','odometer_start'=>125,'odometer_end'=>165]);
+            AvailabilityCheck::create(['session_uuid'=>(string)Str::uuid(),'check_date'=>'2026-07-16','period'=>'morning','unit_name'=>'Main Clinic','responded'=>true]);
+            AvailabilityCheck::create(['session_uuid'=>(string)Str::uuid(),'check_date'=>'2026-08-16','period'=>'morning','unit_name'=>'Main Clinic','responded'=>true]);
+            WeeklyActivity::create(['activity_date'=>'2026-07-17','category'=>'training','title'=>'July training','description'=>'July training']);
+            WeeklyActivity::create(['activity_date'=>'2026-08-17','category'=>'training','title'=>'August training','description'=>'August training']);
+
+            $this->actingAs($user)->get(route('ems.reports'))->assertOk()
+                ->assertViewHas('filters',fn($filters)=>$filters['period_preset']==='this_week'&&$filters['period_start']==='2026-08-16'&&$filters['period_end']==='2026-08-19');
+
+            $this->actingAs($user)->get(route('ems.reports',['period_preset'=>'last_month']))
+                ->assertOk()
+                ->assertViewHas('filters',fn($filters)=>$filters['period_start']==='2026-07-01'&&$filters['period_end']==='2026-07-31'&&$filters['period_label']==='Last Month')
+                ->assertViewHas('totalMovements',1)
+                ->assertViewHas('ambulancesUsed',1)
+                ->assertViewHas('totalAmbulances',1)
+                ->assertViewHas('availabilityChecks',1)
+                ->assertViewHas('activityCount',1)
+                ->assertSee('About dashboard reporting periods')
+                ->assertSee('positionHelp')
+                ->assertSee('fixed z-[200]',false)
+                ->assertSee('Last Month')
+                ->assertSee('01 Jul 2026, 00:00 – 31 Jul 2026, 23:59');
+        }finally{
+            \Carbon\Carbon::setTestNow();
+        }
     }
 
     public function test_movement_list_can_be_filtered_by_operational_fields(): void
@@ -403,9 +443,9 @@ class EmsWorkflowTest extends TestCase
         ]);
 
         $expectedTitles = [
-            'mileage' => 'Weekly Mileage Report',
-            'weekly_activity' => 'Weekly Report',
-            'availability' => 'EMS Weekly Availability Report',
+            'mileage' => 'Daily Ambulance Mileage Report',
+            'weekly_activity' => 'Daily Operational Activities Report',
+            'availability' => 'Daily Radio & Availability Report',
         ];
 
         foreach ($expectedTitles as $type => $title) {
@@ -434,6 +474,44 @@ class EmsWorkflowTest extends TestCase
                 ->assertDontSee('Awaiting approval')
                 ->assertDontSee('Draft');
             if($type==='availability')$printResponse->assertSee('Unit Responses')->assertSee('Main Clinic');
+        }
+    }
+
+    public function test_each_report_type_can_use_every_easy_reporting_period(): void
+    {
+        $user=User::factory()->create();
+        \Carbon\Carbon::setTestNow('2026-08-19 10:00:00');
+        try{
+            $expectedPeriods=[
+                'today'=>['2026-08-19','2026-08-19','Today'],
+                'yesterday'=>['2026-08-18','2026-08-18','Yesterday'],
+                'this_week'=>['2026-08-16','2026-08-19','This Week'],
+                'last_week'=>['2026-08-09','2026-08-15','Last Week'],
+                'this_month'=>['2026-08-01','2026-08-19','This Month'],
+                'last_month'=>['2026-07-01','2026-07-31','Last Month'],
+                'this_quarter'=>['2026-07-01','2026-08-19','This Quarter'],
+                'last_quarter'=>['2026-04-01','2026-06-30','Last Quarter'],
+                'last_six_months'=>['2026-02-01','2026-07-31','Last 6 Months'],
+                'this_year'=>['2026-01-01','2026-08-19','This Year'],
+                'last_year'=>['2025-01-01','2025-12-31','Last Year'],
+            ];
+
+            foreach(['mileage','weekly_activity','availability'] as $type){
+                foreach($expectedPeriods as $preset=>[$expectedStart,$expectedEnd,$expectedLabel]){
+                    $this->actingAs($user)->post(route('ems.reports.store'),[
+                        'type'=>$type,
+                        'period_preset'=>$preset,
+                    ])->assertRedirect();
+                    $report=EmsReport::where('type',$type)->latest('id')->firstOrFail();
+                    $this->assertSame($expectedStart,$report->period_start->toDateString());
+                    $this->assertSame($expectedEnd,$report->period_end->toDateString());
+                    $this->assertSame($expectedLabel,$report->snapshot['reporting_period_label']);
+                }
+            }
+
+            $this->assertSame(33,EmsReport::count());
+        }finally{
+            \Carbon\Carbon::setTestNow();
         }
     }
 
