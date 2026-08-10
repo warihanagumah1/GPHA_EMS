@@ -13,6 +13,7 @@ The application integrates with GPHA Central Login for authentication, branch co
 - Grouped radio communication and availability check sessions.
 - Weekly operational activities, outcomes, owners, and follow-up actions.
 - Filterable analytics dashboard and operational CSV export.
+- Downloadable management analytics snapshot with operational cards and graphs.
 - Printable mileage, operational activity, and availability reports.
 - Daily, weekly, monthly, quarterly, six-month, annual, and custom reporting periods.
 - Branch-scoped records and detailed audit history.
@@ -261,21 +262,22 @@ These rules work correctly across month, quarter, and year boundaries.
 
 ### Reports dashboard filtering
 
-The selected reporting period filters the entire dashboard:
+The selected reporting period filters the entire management dashboard:
 
 - Total movements.
 - Completed and active movements.
-- Critical movements.
-- Ambulances used.
-- Completion rate.
+- Emergency-priority movements.
+- Fleet utilisation and ambulance movement load.
+- Completion and emergency rates.
 - Movement trend.
 - Status distribution.
-- Availability checks and response rate.
-- Recorded operational activities.
+- Priority mix.
+- Availability checks, readiness performance, and response rate.
+- Recorded operational activities, category mix, and open follow-ups.
 
 Ambulance and movement-status filters additionally narrow movement-related metrics. Availability and activity metrics are filtered by the selected reporting period because they are not tied to a single ambulance movement.
 
-The blue period banner displays the active label and exact From/To dates.
+The management snapshot header displays the active label and exact From/To dates. **Download Snapshot** saves the header, management cards, and graphs as a high-resolution PNG for insertion into another report.
 
 ### Operational CSV export
 
@@ -344,14 +346,18 @@ Example first deployment:
 ```bash
 cd /var/www/EmergencyUnit
 composer install --no-dev --prefer-dist --optimize-autoloader
-cp .env.example .env
+cp .env.production.example .env
+# Edit .env and replace every URL, credential, and SSO placeholder.
 php artisan key:generate
 npm ci
 npm run build
+php artisan optimize:clear
 php artisan migrate --force
 php artisan storage:link
 php artisan optimize
 ```
+
+Before enabling traffic, confirm that `.env` contains `APP_ENV=production`, `APP_DEBUG=false`, the public HTTPS `APP_URL`, the correct database connection, and the exact Central Login return URL registered for EMS.
 
 Set writable directory permissions. Replace `www-data` if the server uses another web-server account:
 
@@ -367,6 +373,8 @@ sudo chown -R www-data:www-data database
 sudo chmod -R 775 database
 ```
 
+The root-level `gpha-ems` file in the current working copy is an SQLite database containing local application data. Back it up and transfer it separately only when intentionally moving that database. Do not overwrite an existing production database during a routine code deployment.
+
 For subsequent deployments:
 
 ```bash
@@ -375,12 +383,24 @@ php artisan down
 composer install --no-dev --prefer-dist --optimize-autoloader
 npm ci
 npm run build
+php artisan optimize:clear
 php artisan migrate --force
 php artisan optimize
+php artisan queue:restart
 php artisan up
 ```
 
 Do not replace the production `.env` or regenerate `APP_KEY` during routine updates. Back up the production database before running migrations.
+
+After deployment, verify the release:
+
+```bash
+php artisan about --only=environment,cache,drivers
+php artisan migrate:status
+php artisan route:list
+```
+
+The environment should report `production`, debug mode disabled, cached configuration/routes/views, and no pending migrations.
 
 ## Useful maintenance commands
 

@@ -81,3 +81,52 @@ window.addEventListener('pageshow', () => {
         });
     });
 });
+
+document.addEventListener('click', async (event) => {
+    if (!(event.target instanceof Element)) return;
+    const button = event.target.closest('[data-download-analytics-snapshot]');
+    if (!(button instanceof HTMLButtonElement) || button.disabled) return;
+
+    const target = document.getElementById(button.dataset.target || '');
+    const status = document.querySelector('[data-snapshot-status]');
+    if (!target) return;
+
+    const originalHtml = button.innerHTML;
+    button.disabled = true;
+    button.classList.add('is-loading');
+    button.innerHTML = loadingMarkup('Preparing PNG…');
+    if (status) status.textContent = 'Rendering management snapshot…';
+
+    try {
+        if (document.fonts?.ready) await document.fonts.ready;
+        const { default: html2canvas } = await import('html2canvas');
+        const canvas = await html2canvas(target, {
+            backgroundColor: '#f1f5f9',
+            logging: false,
+            scale: 2,
+            scrollX: 0,
+            scrollY: -window.scrollY,
+            useCORS: true,
+            windowWidth: Math.max(document.documentElement.clientWidth, target.scrollWidth),
+        });
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+        if (!(blob instanceof Blob)) throw new Error('The snapshot image could not be created.');
+
+        const link = document.createElement('a');
+        const objectUrl = URL.createObjectURL(blob);
+        link.href = objectUrl;
+        link.download = button.dataset.filename || 'gpha-ems-management-analytics.png';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(objectUrl);
+        if (status) status.textContent = 'Snapshot downloaded.';
+    } catch (error) {
+        console.error('Management snapshot failed', error);
+        if (status) status.textContent = 'Snapshot could not be created. Please try again.';
+    } finally {
+        button.disabled = false;
+        button.classList.remove('is-loading');
+        button.innerHTML = originalHtml;
+    }
+});

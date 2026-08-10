@@ -1,7 +1,7 @@
 <x-app-layout>
 @php($first=$checks->first())
 <div class="gpha-page-shell space-y-6">
-    <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p class="font-extrabold text-gpha-primary">Operations Logs</p><h1 class="text-3xl font-black text-slate-950">Edit Check Session</h1><p class="mt-1 font-semibold text-slate-500">Update the session and its unit responses.</p></div><a href="{{ route('ems.availability.sessions.show',$session) }}" class="gpha-button-primary">Close</a></div>
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p class="font-extrabold text-gpha-primary">Operations Logs</p><h1 class="text-3xl font-black text-slate-950">Edit Check Session</h1><p class="mt-1 font-semibold text-slate-500">Update the session and its unit responses.</p></div><a href="{{ route('ems.availability') }}" class="gpha-button-primary">Back</a></div>
     @if($errors->any())<x-dismissible-alert type="error"><p class="font-extrabold">Please correct the following:</p><ul class="mt-1 list-disc pl-5">@foreach($errors->all() as $error)<li>{{ $error }}</li>@endforeach</ul></x-dismissible-alert>@endif
     <section class="gpha-panel p-5"><form method="POST" action="{{ route('ems.availability.sessions.update',$session) }}" class="space-y-5">@csrf @method('PUT')
         <div class="grid gap-4 md:grid-cols-3">

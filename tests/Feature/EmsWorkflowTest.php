@@ -11,6 +11,7 @@ use App\Models\MileageReading;
 use App\Models\User;
 use App\Models\WeeklyActivity;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -27,7 +28,7 @@ class EmsWorkflowTest extends TestCase
             'registration_number' => 'gv 100-26',
             'base_location' => 'Main Clinic',
             'odometer_km' => 100,
-        ])->assertRedirect();
+        ])->assertRedirect(route('ems.ambulances'));
 
         $this->assertDatabaseHas('ambulances', [
             'fleet_number' => 'AMBU 1',
@@ -58,6 +59,11 @@ class EmsWorkflowTest extends TestCase
     public function test_ambulance_registration_year_location_and_expiry_are_strictly_validated(): void
     {
         $user=User::factory()->create();
+        $registrationField = Blade::render('<x-ems.ambulance-form action="/ambulances" />');
+        $this->assertStringContainsString('registrationValid()', $registrationField);
+        $this->assertStringContainsString('Valid registration format.', $registrationField);
+        $this->assertStringContainsString('Enter a valid registration number such as GV 1234-26.', $registrationField);
+
         $this->actingAs($user)->post(route('ems.ambulances.store'),[
             'fleet_number'=>'AMBU 8','registration_number'=>'DVFG1233','year'=>now()->year+1,
             'base_location'=>'Unknown Base','odometer_km'=>-1,'roadworthy_expires_at'=>today()->subDay()->toDateString(),
@@ -68,6 +74,25 @@ class EmsWorkflowTest extends TestCase
             'base_location'=>'Main Clinic','odometer_km'=>0,
         ])->assertRedirect();
         $this->assertDatabaseHas('ambulances',['fleet_number'=>'AMBU 8','registration_number'=>'GV 1234-26','year'=>now()->year]);
+    }
+
+    public function test_successful_ambulance_update_redirects_to_the_ambulance_list(): void
+    {
+        $user = User::factory()->create();
+        $ambulance = $this->ambulance();
+
+        $this->actingAs($user)->put(route('ems.ambulances.update', $ambulance), [
+            'fleet_number' => $ambulance->fleet_number,
+            'registration_number' => $ambulance->registration_number,
+            'make' => 'Mercedes-Benz',
+            'base_location' => $ambulance->base_location,
+            'odometer_km' => $ambulance->odometer_km,
+        ])->assertRedirect(route('ems.ambulances'));
+
+        $this->assertDatabaseHas('ambulances', [
+            'id' => $ambulance->id,
+            'make' => 'Mercedes-Benz',
+        ]);
     }
 
     public function test_movement_datetime_and_status_are_validated_and_completed_history_does_not_dispatch_the_ambulance(): void
@@ -133,7 +158,7 @@ class EmsWorkflowTest extends TestCase
 
         $this->actingAs($user)->post(route('ems.dispatches.store'), [
             'ambulance_id' => $ambulance->id,
-            'priority' => 'urgent',
+            'priority' => 'non_emergency',
             'requested_at' => now()->format('Y-m-d H:i:s'),
             'status' => 'requested',
             'origin' => 'Main Clinic',
@@ -163,11 +188,11 @@ class EmsWorkflowTest extends TestCase
         $movement=Dispatch::create(['uuid'=>(string)Str::uuid(),'reference'=>'EMS-AUDIT-001','ambulance_id'=>$ambulance->id,'priority'=>'routine','status'=>'completed','origin'=>'Main Clinic','destination'=>'Clinic B','purpose'=>'Patient transfer','requested_at'=>now(),'completed_at'=>now(),'created_by'=>$user->id]);
 
         $this->actingAs($user)->get(route('ems.dispatches.show',$movement))->assertOk()->assertDontSee('Crew Lead')->assertDontSee('Odometer')->assertDontSee('Distance:');
-        $this->actingAs($user)->put(route('ems.dispatches.update',$movement),['ambulance_id'=>$ambulance->id,'priority'=>'urgent','requested_at'=>$movement->requested_at->format('Y-m-d H:i:s'),'status'=>'completed','origin'=>'Main Clinic','destination'=>'Clinic B','purpose'=>'Emergency response','notes'=>'Corrected after review.'])->assertRedirect(route('ems.dispatches.show',$movement));
-        $this->assertDatabaseHas('dispatches',['id'=>$movement->id,'priority'=>'urgent','purpose'=>'Emergency response']);
+        $this->actingAs($user)->put(route('ems.dispatches.update',$movement),['ambulance_id'=>$ambulance->id,'priority'=>'non_emergency','requested_at'=>$movement->requested_at->format('Y-m-d H:i:s'),'status'=>'completed','origin'=>'Main Clinic','destination'=>'Clinic B','purpose'=>'Emergency response','notes'=>'Corrected after review.'])->assertRedirect(route('ems.dispatches'));
+        $this->assertDatabaseHas('dispatches',['id'=>$movement->id,'priority'=>'non_emergency','purpose'=>'Emergency response']);
         $updatedAudit=EmsAuditLog::where('action','movement.updated')->where('subject_reference','EMS-AUDIT-001')->latest('id')->firstOrFail();
         $this->assertSame('routine',$updatedAudit->old_values['priority']);
-        $this->assertSame('urgent',$updatedAudit->new_values['priority']);
+        $this->assertSame('non_emergency',$updatedAudit->new_values['priority']);
 
         $this->actingAs($user)->delete(route('ems.dispatches.destroy',$movement))->assertRedirect(route('ems.dispatches'));
         $this->assertSoftDeleted('dispatches',['id'=>$movement->id]);
@@ -184,7 +209,7 @@ class EmsWorkflowTest extends TestCase
             'origin' => 'Main Clinic',
             'destination' => 'Tema General Hospital',
             'purpose' => 'Patient transfer',
-            'priority' => 'urgent',
+            'priority' => 'non_emergency',
             'status' => 'completed',
             'requested_at' => now(),
             'completed_at' => now(),
@@ -196,7 +221,16 @@ class EmsWorkflowTest extends TestCase
         $this->actingAs($user)->get(route('ems.reports', $filters))
             ->assertOk()
             ->assertSee('Operational Reports')
+            ->assertSee('Management Analytics')
+            ->assertSee('Download Snapshot')
+            ->assertSee('data-download-analytics-snapshot', false)
             ->assertSee('Movement Trend')
+            ->assertSee('Fleet Movement Load')
+            ->assertSee('Priority Mix')
+            ->assertSee('Readiness Performance')
+            ->assertSee('Activity Mix')
+            ->assertSee('Fleet Utilisation')
+            ->assertSee('Open Follow-ups')
             ->assertSee('Ambulances Used')
             ->assertDontSee('Recorded Distance')
             ->assertDontSee('Fleet Performance')
@@ -232,6 +266,11 @@ class EmsWorkflowTest extends TestCase
                 ->assertViewHas('totalAmbulances',1)
                 ->assertViewHas('availabilityChecks',1)
                 ->assertViewHas('activityCount',1)
+                ->assertViewHas('fleetUtilizationRate',100.0)
+                ->assertViewHas('priorityCounts',fn($counts)=>$counts->get('routine')===1)
+                ->assertViewHas('availabilityStatusCounts',fn($counts)=>$counts->get('responded')===1&&$counts->get('no_response')===0)
+                ->assertViewHas('activityCategoryCounts',fn($counts)=>$counts->get('training')===1)
+                ->assertViewHas('openFollowUps',0)
                 ->assertSee('About dashboard reporting periods')
                 ->assertSee('positionHelp')
                 ->assertSee('fixed z-[200]',false)
@@ -246,11 +285,11 @@ class EmsWorkflowTest extends TestCase
     {
         $user=User::factory()->create();
         $ambulance=$this->ambulance();
-        Dispatch::create(['reference'=>'EMS-FILTER-URGENT','ambulance_id'=>$ambulance->id,'origin'=>'Main Clinic','destination'=>'Tema General Hospital','purpose'=>'Patient transfer','priority'=>'urgent','status'=>'completed','requested_at'=>now()]);
+        Dispatch::create(['reference'=>'EMS-FILTER-NONEMERGENCY','ambulance_id'=>$ambulance->id,'origin'=>'Main Clinic','destination'=>'Tema General Hospital','purpose'=>'Patient transfer','priority'=>'non_emergency','status'=>'completed','requested_at'=>now()]);
         Dispatch::create(['reference'=>'EMS-FILTER-ROUTINE','ambulance_id'=>$ambulance->id,'origin'=>'Main Clinic','destination'=>'KUT Terminal','purpose'=>'Routine operational movement','priority'=>'routine','status'=>'requested','requested_at'=>now()]);
 
-        $this->actingAs($user)->get(route('ems.dispatches',['priority'=>'urgent','status'=>'completed','purpose'=>'Patient transfer']))
-            ->assertOk()->assertSee('EMS-FILTER-URGENT')->assertDontSee('EMS-FILTER-ROUTINE')->assertSee('Apply Filters');
+        $this->actingAs($user)->get(route('ems.dispatches',['priority'=>'non_emergency','status'=>'completed','purpose'=>'Patient transfer']))
+            ->assertOk()->assertSee('EMS-FILTER-NONEMERGENCY')->assertDontSee('EMS-FILTER-ROUTINE')->assertSee('Apply Filters');
     }
 
     public function test_all_operational_lists_use_fifteen_items_per_page(): void
@@ -370,12 +409,12 @@ class EmsWorkflowTest extends TestCase
 
         $this->actingAs($user)->get(route('ems.availability'))->assertOk()->assertSee('Check Sessions')->assertSee('Units Checked')->assertSee('Check session actions');
         $this->actingAs($user)->get(route('ems.availability.sessions.show',$session))->assertOk()->assertSee('Main Clinic')->assertSee('KUT Terminal');
-        $this->actingAs($user)->get(route('ems.availability.sessions.edit',$session))->assertOk()->assertSee('Mark All Responded');
+        $this->actingAs($user)->get(route('ems.availability.sessions.edit',$session))->assertOk()->assertSee('Mark All Responded')->assertSee('href="'.route('ems.availability').'"',false)->assertSee('>Back</a>',false);
         $checks=AvailabilityCheck::where('session_uuid',$session)->orderBy('id')->get();
         $this->actingAs($user)->put(route('ems.availability.sessions.update',$session),[
             'check_date'=>today()->toDateString(),'period'=>'morning','checked_at'=>'07:45',
             'checks'=>$checks->map(fn($check)=>['id'=>$check->id,'responded'=>'1','response_location'=>'Main Clinic','observation'=>'Confirmed'])->all(),
-        ])->assertRedirect(route('ems.availability.sessions.show',$session));
+        ])->assertRedirect(route('ems.availability'));
         $this->assertDatabaseMissing('availability_checks',['session_uuid'=>$session,'responded'=>false]);
 
         $this->actingAs($user)->delete(route('ems.availability.sessions.destroy',$session))->assertRedirect(route('ems.availability'));
@@ -392,7 +431,7 @@ class EmsWorkflowTest extends TestCase
         $this->actingAs($user)->get(route('ems.activities.show',$activity))->assertOk()->assertSee('Morning briefing held.');
         $this->actingAs($user)->put(route('ems.activities.update',$activity),[
             'activity_date'=>today()->toDateString(),'category'=>'inspection','description'=>'<p><strong>Ambulance inspected.</strong></p>','outcome'=>'<p>Ready for service.</p>',
-        ])->assertRedirect(route('ems.activities.show',$activity));
+        ])->assertRedirect(route('ems.activities'));
         $this->assertDatabaseHas('weekly_activities',['id'=>$activity->id,'category'=>'inspection','title'=>'Ambulance inspected']);
         $this->assertDatabaseHas('ems_audit_logs',['action'=>'weekly_activity.updated','subject_id'=>$activity->id]);
 
@@ -424,7 +463,7 @@ class EmsWorkflowTest extends TestCase
             'origin' => 'Main Clinic',
             'destination' => 'Tema General Hospital',
             'purpose' => 'Patient transfer',
-            'priority' => 'urgent',
+            'priority' => 'non_emergency',
             'status' => 'completed',
             'requested_at' => now(),
             'completed_at' => now(),
@@ -553,7 +592,7 @@ class EmsWorkflowTest extends TestCase
         $this->actingAs($user)->get(route('ems.mileage.show',$reading))->assertOk()->assertSee('Mileage Reading')->assertSee('2,500 km');
         $this->actingAs($user)->put(route('ems.mileage.update',$reading),[
             'ambulance_id'=>$ambulance->id,'reading_date'=>'2026-07-13','odometer_km'=>2600,'source'=>'weekly','notes'=>'Verified correction.',
-        ])->assertRedirect(route('ems.mileage.show',$reading));
+        ])->assertRedirect(route('ems.mileage'));
         $this->assertDatabaseHas('mileage_readings',['id'=>$reading->id,'odometer_km'=>2600,'notes'=>'Verified correction.']);
 
         $this->actingAs($user)->from(route('ems.mileage.edit',$reading))->put(route('ems.mileage.update',$reading),[

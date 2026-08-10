@@ -23,7 +23,7 @@
             <!-- Page Heading -->
             @if (isset($header))
                 <header class="bg-white shadow">
-                    <div class="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
+                    <div class="w-full px-4 py-6 sm:px-6 lg:px-8">
                         {{ $header }}
                     </div>
                 </header>
@@ -33,7 +33,7 @@
             <main class="flex-1">
                 {{ $slot }}
             </main>
-    <footer class="mt-8 bg-gpha-primary text-white"><div class="mx-auto flex max-w-[1600px] flex-col gap-3 px-4 py-6 sm:px-6 md:flex-row md:items-center md:justify-between"><div class="flex items-center gap-3"><x-application-logo class="h-11 w-11 shrink-0 rounded-full object-cover" /><div><p class="font-extrabold">Ghana <span class="text-gpha-secondary">Ports</span> and Harbours Authority</p><p class="text-sm text-white/70">Emergency Medical Services Department</p></div></div><p class="text-sm text-white/70">© {{ now()->year }} GPHA EMS</p></div></footer>
+    <footer class="mt-8 bg-gpha-primary text-white"><div class="flex w-full flex-col gap-3 px-4 py-6 sm:px-6 md:flex-row md:items-center md:justify-between lg:px-8"><div class="flex items-center gap-3"><x-application-logo class="h-11 w-11 shrink-0 rounded-full object-cover" /><div><p class="font-extrabold">Ghana <span class="text-gpha-secondary">Ports</span> and Harbours Authority</p><p class="text-sm text-white/70">Emergency Medical Services Department</p></div></div><p class="text-sm text-white/70">© {{ now()->year }} GPHA EMS</p></div></footer>
         </div>
         <x-ems.confirmation-dialog />
     </body>

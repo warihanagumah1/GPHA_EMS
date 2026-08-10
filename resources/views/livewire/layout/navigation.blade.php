@@ -23,7 +23,7 @@ new class extends Component {
     $initials = str($userName)->explode(' ')->filter()->take(2)->map(fn($part) => str($part)->substr(0, 1))->join('');
 @endphp
 <nav x-data="{ open:false, logsOpen:false, logsCloseTimer:null, desktopLogs(){ return window.matchMedia('(min-width: 1024px)').matches }, openLogs(){ if(this.desktopLogs()){ clearTimeout(this.logsCloseTimer); this.logsOpen=true } }, closeLogs(){ if(this.desktopLogs()){ clearTimeout(this.logsCloseTimer); this.logsCloseTimer=setTimeout(() => this.logsOpen=false, 150) } } }" class="sticky top-0 z-40 border-t-[3px] border-gpha-secondary bg-gpha-primary text-white shadow-md">
-    <div class="mx-auto max-w-7xl px-4 py-4 sm:px-6 lg:px-8">
+    <div class="w-full px-4 py-4 sm:px-6 lg:px-8">
         <div class="flex items-center justify-between gap-5">
             <a href="{{ route('dashboard') }}" wire:navigate class="flex items-center gap-4">
                 <span class="flex h-16 w-16 shrink-0 overflow-hidden rounded-full bg-white p-1.5"><x-application-logo class="h-full w-full object-contain" /></span>

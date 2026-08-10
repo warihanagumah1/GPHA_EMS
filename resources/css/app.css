@@ -22,7 +22,7 @@
 }
 
 @layer components {
-    .gpha-page-shell { @apply mx-auto w-full max-w-7xl px-4 py-4 sm:px-6 lg:px-8; }
+    .gpha-page-shell { @apply w-full px-4 py-4 sm:px-6 lg:px-8; }
     .gpha-panel { @apply rounded-lg border border-slate-200 bg-white shadow-[0_16px_40px_rgba(15,79,143,0.07)]; }
     .gpha-top-pipe { @apply relative overflow-hidden; }
     .gpha-top-pipe::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 6px; background: var(--color-gpha-secondary); border-radius: 999px 999px 0 0; pointer-events: none; }

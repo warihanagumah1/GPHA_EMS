@@ -1,6 +1,12 @@
 <?php
 
 return [
+    'movement_priorities' => [
+        'routine' => 'Routine',
+        'non_emergency' => 'Non-emergency',
+        'emergency' => 'Emergency',
+    ],
+
     'movement_locations' => [
         'Main Clinic',
         'Clinic B',
@@ -25,7 +31,7 @@ return [
         'Medical evacuation',
         'Staff medical transport',
         'Accident response',
-        'Standby coverage',
+        'Medical coverage',
         'Equipment or supply movement',
         'Routine operational movement',
         'Maintenance or servicing',

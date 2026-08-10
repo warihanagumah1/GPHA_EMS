@@ -27,7 +27,7 @@ class EmsOperationsController extends Controller
             'activeDispatches' => Dispatch::with('ambulance')->whereNotIn('status', ['completed', 'cancelled'])->latest('requested_at')->get(),
             'recentDispatches' => Dispatch::with('ambulance')->latest('requested_at')->limit(6)->get(),
             'completedToday' => Dispatch::where('status', 'completed')->whereDate('completed_at', today())->count(),
-            'criticalActive' => Dispatch::where('priority', 'critical')->whereNotIn('status', ['completed', 'cancelled'])->count(),
+            'emergencyActive' => Dispatch::where('priority', 'emergency')->whereNotIn('status', ['completed', 'cancelled'])->count(),
             'checksToday' => AvailabilityCheck::whereDate('check_date', today())->count(),
             'negativeChecksToday' => AvailabilityCheck::whereDate('check_date', today())->where('responded', false)->count(),
             'followUps' => WeeklyActivity::where('requires_follow_up', true)->whereDate('activity_date', '>=', now()->subDays(14))->count(),
@@ -48,7 +48,7 @@ class EmsOperationsController extends Controller
                 'search' => ['nullable','string','max:120'],
                 'ambulance_id' => ['nullable','integer','exists:ambulances,id'],
                 'status' => ['nullable',Rule::in(['requested','completed'])],
-                'priority' => ['nullable',Rule::in(['routine','urgent','critical'])],
+                'priority' => ['nullable',Rule::in(array_keys(config('ems.movement_priorities')))],
                 'purpose' => ['nullable',Rule::in(config('ems.case_categories'))],
                 'origin' => ['nullable',Rule::in(config('ems.movement_locations'))],
                 'destination' => ['nullable',Rule::in(config('ems.movement_locations'))],
@@ -179,7 +179,7 @@ class EmsOperationsController extends Controller
     {
         $data = $this->validateAmbulance($request);
         Ambulance::create($data+['uuid'=>(string)Str::uuid(),'status'=>'available']);
-        return back()->with('success','Ambulance added successfully.');
+        return redirect()->route('ems.ambulances')->with('success','Ambulance added successfully.');
     }
 
     public function showAmbulance(Request $request, Ambulance $ambulance)
@@ -230,7 +230,7 @@ class EmsOperationsController extends Controller
 
         $ambulance->update($data);
 
-        return redirect()->route('ems.ambulances.show', $ambulance)->with('success', 'Ambulance updated successfully.');
+        return redirect()->route('ems.ambulances')->with('success', 'Ambulance updated successfully.');
     }
 
     public function updateAmbulanceStatus(Request $request, Ambulance $ambulance): RedirectResponse
@@ -303,7 +303,7 @@ class EmsOperationsController extends Controller
             }
         });
 
-        return redirect()->route('ems.dispatches.show', $dispatch)->with('success', 'Movement updated successfully.');
+        return redirect()->route('ems.dispatches')->with('success', 'Movement updated successfully.');
     }
 
     public function destroyDispatch(Dispatch $dispatch): RedirectResponse
@@ -360,7 +360,7 @@ class EmsOperationsController extends Controller
             $reading->update($data);
             if(!$next&&$data['odometer_km']>=$ambulance->odometer_km)$ambulance->update(['odometer_km'=>$data['odometer_km']]);
         });
-        return redirect()->route('ems.mileage.show',$reading)->with('success','Mileage reading updated successfully.');
+        return redirect()->route('ems.mileage')->with('success','Mileage reading updated successfully.');
     }
 
     public function destroyMileage(MileageReading $reading): RedirectResponse
@@ -424,7 +424,7 @@ class EmsOperationsController extends Controller
             'check_date'=>$data['check_date'],'period'=>$data['period'],'checked_at'=>$data['checked_at'],'responded'=>$row['responded'],
             'response_location'=>$row['response_location']??null,'observation'=>$row['observation']??null,
         ]);}});
-        return redirect()->route('ems.availability.sessions.show',$session)->with('success','Check session updated successfully.');
+        return redirect()->route('ems.availability')->with('success','Check session updated successfully.');
     }
 
     public function destroyAvailabilitySession(string $session): RedirectResponse
@@ -454,7 +454,7 @@ class EmsOperationsController extends Controller
     public function updateActivity(Request $request,WeeklyActivity $activity): RedirectResponse
     {
         $activity->update($this->validateActivity($request));
-        return redirect()->route('ems.activities.show',$activity)->with('success','Activity updated successfully.');
+        return redirect()->route('ems.activities')->with('success','Activity updated successfully.');
     }
 
     public function destroyActivity(WeeklyActivity $activity): RedirectResponse
@@ -504,23 +504,47 @@ class EmsOperationsController extends Controller
             ->sortKeys();
         $maxDaily = max(1, (int) $dailyCounts->max());
         $availability = AvailabilityCheck::whereDate('check_date','>=',$filters['period_start'])->whereDate('check_date','<=',$filters['period_end'])->get();
+        $activities = WeeklyActivity::whereDate('activity_date','>=',$filters['period_start'])->whereDate('activity_date','<=',$filters['period_end'])->get();
+        $totalMovements = $records->count();
+        $ambulancesUsed = $records->pluck('ambulance_id')->filter()->unique()->count();
+        $emergencyMovements = $records->where('priority', 'emergency')->count();
+        $availabilityResponded = $availability->where('responded', true)->count();
+        $priorityCounts = collect(array_keys(config('ems.movement_priorities')))
+            ->mapWithKeys(fn ($priority) => [$priority => $records->where('priority', $priority)->count()]);
+        $ambulanceMovementCounts = $ambulances
+            ->mapWithKeys(fn (Ambulance $ambulance) => [$ambulance->fleet_number => $records->where('ambulance_id', $ambulance->id)->count()]);
+        $activityCategoryCounts = collect(['operations','meeting','training','inspection','administration','outreach'])
+            ->mapWithKeys(fn ($category) => [$category => $activities->where('category', $category)->count()]);
 
         return view('ems.reports.dashboard', [
             'filters' => $filters,
             'ambulances' => $ambulances,
-            'totalMovements' => $records->count(),
+            'totalMovements' => $totalMovements,
             'completedMovements' => $completed->count(),
             'activeMovements' => $records->whereIn('status', ['requested', 'dispatched', 'arrived'])->count(),
-            'criticalMovements' => $records->where('priority', 'critical')->count(),
-            'ambulancesUsed' => $records->pluck('ambulance_id')->filter()->unique()->count(),
+            'emergencyMovements' => $emergencyMovements,
+            'emergencyRate' => $totalMovements ? round(($emergencyMovements / $totalMovements) * 100, 1) : 0,
+            'ambulancesUsed' => $ambulancesUsed,
             'totalAmbulances' => $ambulances->count(),
+            'fleetUtilizationRate' => $ambulances->isEmpty() ? 0 : round(($ambulancesUsed / $ambulances->count()) * 100, 1),
             'completionRate' => $records->isEmpty() ? 0 : round(($completed->count() / $records->count()) * 100, 1),
             'statusCounts' => $statusCounts,
             'dailyCounts' => $dailyCounts,
             'maxDaily' => $maxDaily,
             'availabilityChecks' => $availability->count(),
-            'availabilityRate' => $availability->isEmpty() ? null : round(($availability->where('responded', true)->count() / $availability->count()) * 100, 1),
-            'activityCount' => WeeklyActivity::whereDate('activity_date','>=',$filters['period_start'])->whereDate('activity_date','<=',$filters['period_end'])->count(),
+            'availabilityResponded' => $availabilityResponded,
+            'availabilityRate' => $availability->isEmpty() ? null : round(($availabilityResponded / $availability->count()) * 100, 1),
+            'activityCount' => $activities->count(),
+            'openFollowUps' => $activities->where('requires_follow_up', true)->count(),
+            'priorityCounts' => $priorityCounts,
+            'ambulanceMovementCounts' => $ambulanceMovementCounts,
+            'maxAmbulanceMovements' => max(1, (int) $ambulanceMovementCounts->max()),
+            'availabilityStatusCounts' => collect([
+                'responded' => $availabilityResponded,
+                'no_response' => $availability->count() - $availabilityResponded,
+            ]),
+            'activityCategoryCounts' => $activityCategoryCounts,
+            'maxActivityCategoryCount' => max(1, (int) $activityCategoryCounts->max()),
         ]);
     }
 
@@ -535,7 +559,7 @@ class EmsOperationsController extends Controller
             fputcsv($out, ['Reference','Date','Ambulance','Registration','Origin','Destination','Case Category','Priority','Status']);
             $movements->chunk(500, function ($rows) use ($out) {
                 foreach ($rows as $movement) {
-                    fputcsv($out, [$movement->reference,$movement->requested_at?->format('Y-m-d H:i'),$movement->ambulance?->fleet_number,$movement->ambulance?->registration_number,$movement->origin,$movement->destination,$movement->purpose,$movement->priority,$movement->status]);
+                    fputcsv($out, [$movement->reference,$movement->requested_at?->format('Y-m-d H:i'),$movement->ambulance?->fleet_number,$movement->ambulance?->registration_number,$movement->origin,$movement->destination,$movement->purpose,config("ems.movement_priorities.{$movement->priority}", str($movement->priority)->headline()),str($movement->status)->headline()]);
                 }
             });
             fclose($out);
@@ -626,7 +650,7 @@ class EmsOperationsController extends Controller
     {
         return $request->validate([
             'ambulance_id'=>['required','exists:ambulances,id'],
-            'priority'=>['required',Rule::in(['routine','urgent','critical'])],
+            'priority'=>['required',Rule::in(array_keys(config('ems.movement_priorities')))],
             'requested_at'=>['required','date','before_or_equal:now'],
             'status'=>['required',Rule::in(['requested','completed'])],
             'origin'=>['required',Rule::in(config('ems.movement_locations'))],
