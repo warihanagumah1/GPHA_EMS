@@ -54,8 +54,18 @@ class SsoIntegrationTest extends TestCase
         $this->assertDatabaseHas('users', ['sso_user_id' => $id, 'sso_username' => 'ems.user']);
         $response->assertSessionHas('sso.permissions.ambulancefleet', ['view']);
         $response->assertSessionHas('sso.active_branch_code', 'HQ');
-        Http::assertSent(fn ($request) => $request->hasHeader('X-App-Id', 'EMS')
-            && $request['moduleId'] === $this->module);
+        Http::assertSent(fn ($request) => $request->method() === 'GET'
+            && str_starts_with($request->url(), 'http://central.test/api/app-access/user-permissions?')
+            && $request['userId'] === $id
+            && $request['moduleId'] === $this->module
+            && $request->hasHeader('X-App-Id', 'EMS')
+            && $request->hasHeader('X-App-Key', 'test-app-key')
+            && ! $request->hasHeader('Authorization'));
+    }
+
+    public function test_session_cookie_is_available_to_the_dashboard(): void
+    {
+        $this->assertSame('/', config('session.path'));
     }
 
     public function test_invalid_signature_is_rejected(): void
@@ -67,6 +77,25 @@ class SsoIntegrationTest extends TestCase
 
         $this->get(route('sso.login', ['token' => $token]))->assertStatus(401);
         $this->assertGuest();
+    }
+
+    public function test_comma_separated_modules_claim_authorizes_ems(): void
+    {
+        $id = (string) Str::uuid();
+        Http::fake(['*' => Http::response(['permissionCodes' => [
+            'EMS.AmbulanceFleet.View',
+        ]], 200)]);
+
+        $token = $this->token([
+            'UserId' => $id,
+            'moduleId' => null,
+            'modules' => 'f31d5370-d8be-4599-a34c-f4f2a4358203,'.$this->module,
+        ]);
+
+        $this->get(route('sso.login', ['token' => $token]))
+            ->assertRedirect(route('dashboard'));
+
+        $this->assertAuthenticated();
     }
 
     public function test_backend_guard_blocks_unassigned_component(): void
