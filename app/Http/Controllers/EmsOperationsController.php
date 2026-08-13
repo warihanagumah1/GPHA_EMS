@@ -334,8 +334,16 @@ class EmsOperationsController extends Controller
 
     public function storeMileage(Request $request): RedirectResponse
     {
-        [$data,$ambulance,$next]=$this->validateMileage($request);
-        DB::transaction(function() use($data,$ambulance,$next){ MileageReading::create($data+['recorded_by'=>auth()->id()]); if(!$next && $data['odometer_km']>=$ambulance->odometer_km)$ambulance->update(['odometer_km'=>$data['odometer_km']]); });
+        [$data,$ambulance,$next,$deletedDuplicate]=$this->validateMileage($request);
+        DB::transaction(function() use($data,$ambulance,$next,$deletedDuplicate){
+            if($deletedDuplicate){
+                $deletedDuplicate->restore();
+                $deletedDuplicate->update($data+['recorded_by'=>auth()->id()]);
+            }else{
+                MileageReading::create($data+['recorded_by'=>auth()->id()]);
+            }
+            if(!$next && $data['odometer_km']>=$ambulance->odometer_km)$ambulance->update(['odometer_km'=>$data['odometer_km']]);
+        });
         return back()->with('success','Mileage reading saved.');
     }
 
@@ -670,10 +678,11 @@ class EmsOperationsController extends Controller
             'notes'=>['nullable','string','max:1000'],
         ]);
         $ambulance=Ambulance::findOrFail($data['ambulance_id']);
-        $duplicate=MileageReading::where('ambulance_id',$ambulance->id)
+        $duplicate=MileageReading::withoutGlobalScopes()->withTrashed()->where('ambulance_id',$ambulance->id)
             ->whereDate('reading_date',$data['reading_date'])->where('source',$data['source'])
-            ->when($reading,fn($query)=>$query->where('id','!=',$reading->id))->exists();
-        if($duplicate)throw ValidationException::withMessages(['reading_date'=>'A '.$data['source'].' reading already exists for this ambulance on this date.']);
+            ->when($reading,fn($query)=>$query->where('id','!=',$reading->id))->first();
+        if($duplicate&&!$duplicate->trashed())throw ValidationException::withMessages(['reading_date'=>'A '.$data['source'].' reading already exists for this ambulance on this date. Choose the correct reading date or edit the existing reading.']);
+        if($duplicate&&$reading)throw ValidationException::withMessages(['reading_date'=>'A deleted '.$data['source'].' reading already exists for this ambulance on this date. Restore that reading or choose another date.']);
         $previous=MileageReading::where('ambulance_id',$ambulance->id)->whereDate('reading_date','<',$data['reading_date'])
             ->when($reading,fn($query)=>$query->where('id','!=',$reading->id))->latest('reading_date')->first();
         $next=MileageReading::where('ambulance_id',$ambulance->id)->whereDate('reading_date','>',$data['reading_date'])
@@ -681,7 +690,7 @@ class EmsOperationsController extends Controller
         if($previous&&$data['odometer_km']<$previous->odometer_km)throw ValidationException::withMessages(['odometer_km'=>'The reading cannot be lower than the previous reading of '.number_format($previous->odometer_km).' km.']);
         if($next&&$data['odometer_km']>$next->odometer_km)throw ValidationException::withMessages(['odometer_km'=>'The reading cannot exceed the next recorded reading of '.number_format($next->odometer_km).' km.']);
         if(!$next&&$data['reading_date']===today()->toDateString()&&$data['odometer_km']<$ambulance->odometer_km)throw ValidationException::withMessages(['odometer_km'=>'Today’s reading cannot be lower than the current ambulance odometer of '.number_format($ambulance->odometer_km).' km.']);
-        return [$data,$ambulance,$next];
+        return [$data,$ambulance,$next,$duplicate];
     }
 
     private function reportFilters(Request $request): array

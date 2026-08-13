@@ -581,6 +581,131 @@ class EmsWorkflowTest extends TestCase
         ])->assertRedirect(route('ems.mileage'))->assertSessionHasErrors('odometer_km');
     }
 
+    public function test_unchanged_mileage_can_be_recorded_on_a_later_date(): void
+    {
+        $user = User::factory()->create();
+        $ambulance = $this->ambulance(['odometer_km' => 2000]);
+
+        MileageReading::create([
+            'ambulance_id' => $ambulance->id,
+            'reading_date' => today()->subWeek()->toDateString(),
+            'odometer_km' => 2000,
+            'source' => 'weekly',
+            'recorded_by' => $user->id,
+        ]);
+
+        $this->actingAs($user)->post(route('ems.mileage.store'), [
+            'ambulance_id' => $ambulance->id,
+            'reading_date' => today()->toDateString(),
+            'odometer_km' => 2000,
+            'source' => 'weekly',
+        ])->assertRedirect()->assertSessionHasNoErrors();
+
+        $this->assertTrue(MileageReading::where('ambulance_id', $ambulance->id)
+            ->whereDate('reading_date', today())
+            ->where('odometer_km', 2000)
+            ->exists());
+        $this->assertSame(2000, (int) $ambulance->fresh()->odometer_km);
+    }
+
+    public function test_weekly_readings_for_different_historical_weeks_are_saved_with_the_selected_dates(): void
+    {
+        $user = User::factory()->create();
+        $ambulance = $this->ambulance(['odometer_km' => 1200]);
+
+        foreach ([['2026-07-27', 1000], ['2026-08-03', 1100], ['2026-08-10', 1200]] as [$date, $odometer]) {
+            $this->actingAs($user)->post(route('ems.mileage.store'), [
+                'ambulance_id' => $ambulance->id,
+                'reading_date' => $date,
+                'odometer_km' => $odometer,
+                'source' => 'weekly',
+            ])->assertSessionHasNoErrors();
+        }
+
+        $this->assertSame(
+            ['2026-07-27', '2026-08-03', '2026-08-10'],
+            MileageReading::oldest('reading_date')->get()->map(fn (MileageReading $reading) => $reading->reading_date->toDateString())->all(),
+        );
+    }
+
+    public function test_backdated_mileage_is_validated_against_the_immediately_previous_and_next_dates(): void
+    {
+        $user = User::factory()->create();
+        $ambulance = $this->ambulance(['odometer_km' => 1400]);
+        MileageReading::create([
+            'ambulance_id' => $ambulance->id,
+            'reading_date' => '2026-07-27',
+            'odometer_km' => 1000,
+            'source' => 'weekly',
+            'recorded_by' => $user->id,
+        ]);
+        MileageReading::create([
+            'ambulance_id' => $ambulance->id,
+            'reading_date' => '2026-08-10',
+            'odometer_km' => 1400,
+            'source' => 'weekly',
+            'recorded_by' => $user->id,
+        ]);
+
+        $this->actingAs($user)->post(route('ems.mileage.store'), [
+            'ambulance_id' => $ambulance->id,
+            'reading_date' => '2026-08-03',
+            'odometer_km' => 1200,
+            'source' => 'weekly',
+        ])->assertSessionHasNoErrors();
+
+        $this->assertTrue(MileageReading::where('ambulance_id', $ambulance->id)
+            ->whereDate('reading_date', '2026-08-03')
+            ->where('odometer_km', 1200)
+            ->exists());
+
+        $this->actingAs($user)->from(route('ems.mileage'))->post(route('ems.mileage.store'), [
+            'ambulance_id' => $ambulance->id,
+            'reading_date' => '2026-07-30',
+            'odometer_km' => 999,
+            'source' => 'weekly',
+        ])->assertSessionHasErrors('odometer_km');
+
+        $this->actingAs($user)->from(route('ems.mileage'))->post(route('ems.mileage.store'), [
+            'ambulance_id' => $ambulance->id,
+            'reading_date' => '2026-08-06',
+            'odometer_km' => 1401,
+            'source' => 'weekly',
+        ])->assertSessionHasErrors('odometer_km');
+
+        $this->assertSame(1400, (int) $ambulance->fresh()->odometer_km);
+    }
+
+    public function test_reentering_a_soft_deleted_weekly_reading_restores_it_instead_of_violating_the_unique_key(): void
+    {
+        $user = User::factory()->create();
+        $ambulance = $this->ambulance(['odometer_km' => 1200]);
+        $deleted = MileageReading::create([
+            'ambulance_id' => $ambulance->id,
+            'reading_date' => '2026-08-10',
+            'odometer_km' => 1100,
+            'source' => 'weekly',
+            'recorded_by' => $user->id,
+        ]);
+        $deleted->delete();
+
+        $this->actingAs($user)->post(route('ems.mileage.store'), [
+            'ambulance_id' => $ambulance->id,
+            'reading_date' => '2026-08-10',
+            'odometer_km' => 1200,
+            'source' => 'weekly',
+            'notes' => 'Corrected reading.',
+        ])->assertSessionHasNoErrors();
+
+        $this->assertDatabaseHas('mileage_readings', [
+            'id' => $deleted->id,
+            'odometer_km' => 1200,
+            'notes' => 'Corrected reading.',
+            'deleted_at' => null,
+        ]);
+        $this->assertSame(1, MileageReading::withTrashed()->count());
+    }
+
     public function test_mileage_reading_can_be_viewed_edited_and_soft_deleted_with_audit_history(): void
     {
         $user=User::factory()->create();
