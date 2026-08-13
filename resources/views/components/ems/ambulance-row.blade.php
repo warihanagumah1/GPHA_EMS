@@ -20,6 +20,10 @@
                             {{ $ambulance->status === 'available' ? 'Mark Unavailable' : 'Mark Available' }}
                         </button>
                     </form>
+                    <form method="POST" action="{{ route('ems.ambulances.destroy', $ambulance) }}" data-confirm-title="Delete Ambulance?" data-confirm-message="Are you sure you want to delete {{ $ambulance->fleet_number }}?" data-confirm-label="Yes, Delete Ambulance" data-confirm-tone="danger">
+                        @csrf @method('DELETE')
+                        <button type="submit" @click="open=false" class="block min-h-0 w-full px-4 py-2 text-left font-semibold text-red-600 hover:bg-red-50">Delete</button>
+                    </form>
                 @endif
             @endif
         </div>

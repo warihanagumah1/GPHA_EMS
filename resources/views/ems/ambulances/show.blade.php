@@ -8,7 +8,15 @@
         <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div><h1 class="text-[1.2rem] font-black text-slate-900">Ambulance {{ $ambulance->fleet_number }}</h1><p class="mt-2 font-semibold text-slate-500">{{ $ambulance->registration_number }} · {{ $ambulance->current_location ?: $ambulance->base_location }}</p></div>
             <div class="flex flex-wrap gap-2">
-                @if($canManage)<a href="{{ route('ems.ambulances.edit', $ambulance) }}" class="gpha-button-secondary">Edit</a>@endif
+                @if($canManage)
+                    <a href="{{ route('ems.ambulances.edit', $ambulance) }}" class="gpha-button-secondary">Edit</a>
+                    @if($ambulance->status !== 'dispatched')
+                        <form method="POST" action="{{ route('ems.ambulances.destroy', $ambulance) }}" class="inline-flex" data-confirm-title="Delete Ambulance?" data-confirm-message="Are you sure you want to delete {{ $ambulance->fleet_number }}?" data-confirm-label="Yes, Delete Ambulance" data-confirm-tone="danger">
+                            @csrf @method('DELETE')
+                            <button class="gpha-button-danger">Delete</button>
+                        </form>
+                    @endif
+                @endif
                 <a href="{{ route('ems.ambulances') }}" class="gpha-button-primary">Back</a>
             </div>
         </div>

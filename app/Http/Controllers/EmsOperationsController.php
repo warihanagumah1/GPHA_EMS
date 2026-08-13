@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Carbon\Carbon;
 use App\Models\Ambulance;
 use App\Models\AvailabilityCheck;
+use App\Models\AvailabilityUnit;
 use App\Models\Dispatch;
 use App\Models\EmsReport;
 use App\Models\EmsAuditLog;
@@ -50,8 +51,8 @@ class EmsOperationsController extends Controller
                 'status' => ['nullable',Rule::in(['requested','completed'])],
                 'priority' => ['nullable',Rule::in(array_keys(config('ems.movement_priorities')))],
                 'purpose' => ['nullable',Rule::in(config('ems.case_categories'))],
-                'origin' => ['nullable',Rule::in(config('ems.movement_locations'))],
-                'destination' => ['nullable',Rule::in(config('ems.movement_locations'))],
+                'origin' => ['nullable','string','max:160'],
+                'destination' => ['nullable','string','max:160'],
                 'date_from' => ['nullable','date'],
                 'date_to' => ['nullable','date','after_or_equal:date_from'],
             ]);
@@ -132,7 +133,6 @@ class EmsOperationsController extends Controller
         if ($module === 'activities') {
             $activityFilters = $request->validate([
                 'search' => ['nullable','string','max:120'],
-                'category' => ['nullable',Rule::in(['operations','meeting','training','inspection','administration','outreach'])],
                 'requires_follow_up' => ['nullable',Rule::in(['1','0'])],
                 'date_from' => ['nullable','date'],
                 'date_to' => ['nullable','date','after_or_equal:date_from'],
@@ -146,7 +146,6 @@ class EmsOperationsController extends Controller
                         ->orWhere('follow_up_action','like',"%{$search}%")
                         ->orWhere('follow_up_owner','like',"%{$search}%"));
                 })
-                ->when(filled($activityFilters['category'] ?? null), fn ($query) => $query->where('category',$activityFilters['category']))
                 ->when(($activityFilters['requires_follow_up'] ?? '') !== '', fn ($query) => $query->where('requires_follow_up',(bool) $activityFilters['requires_follow_up']))
                 ->when(filled($activityFilters['date_from'] ?? null), fn ($query) => $query->whereDate('activity_date','>=',$activityFilters['date_from']))
                 ->when(filled($activityFilters['date_to'] ?? null), fn ($query) => $query->whereDate('activity_date','<=',$activityFilters['date_to']))
@@ -154,6 +153,12 @@ class EmsOperationsController extends Controller
         }
 
         $ambulances = Ambulance::orderBy('fleet_number')->get();
+        $managedAvailabilityUnits = $module === 'availability'
+            ? AvailabilityUnit::orderBy('name')->paginate(15,['*'],'units_page')->withQueryString()
+            : collect();
+        $activeAvailabilityUnitNames = $module === 'availability'
+            ? AvailabilityUnit::where('is_active',true)->orderBy('name')->pluck('name')
+            : collect();
         $fleet = $module === 'ambulances'
             ? Ambulance::orderBy('fleet_number')->paginate(15)->withQueryString()
             : collect();
@@ -171,7 +176,8 @@ class EmsOperationsController extends Controller
             'readings' => $readings,
             'checks' => $checks,
             'activities' => $activities,
-            'availabilityUnits' => collect($ambulances->pluck('fleet_number'))->merge(config('ems.availability_units'))->unique()->values(),
+            'managedAvailabilityUnits' => $managedAvailabilityUnits,
+            'availabilityUnits' => collect($ambulances->pluck('fleet_number'))->merge($activeAvailabilityUnitNames)->unique()->values(),
         ]);
     }
 
@@ -222,15 +228,30 @@ class EmsOperationsController extends Controller
     {
         $data = $this->validateAmbulance($request, $ambulance);
 
-        if ($data['odometer_km'] < $ambulance->odometer_km) {
+        if ($ambulance->mileageReadings()->exists() && $data['odometer_km'] < $ambulance->odometer_km) {
             throw ValidationException::withMessages([
-                'odometer_km' => 'The odometer cannot be lower than the current recorded value of '.number_format($ambulance->odometer_km).' km.',
+                'odometer_km' => 'The odometer cannot be reduced because mileage readings already exist. Correct or delete the relevant mileage reading instead.',
             ]);
         }
 
         $ambulance->update($data);
 
         return redirect()->route('ems.ambulances')->with('success', 'Ambulance updated successfully.');
+    }
+
+    public function destroyAmbulance(Ambulance $ambulance): RedirectResponse
+    {
+        $hasActiveMovement = $ambulance->dispatches()->whereNotIn('status', ['completed', 'cancelled'])->exists();
+
+        if ($hasActiveMovement) {
+            throw ValidationException::withMessages([
+                'ambulance' => 'This ambulance has an active movement and cannot be deleted yet.',
+            ]);
+        }
+
+        $ambulance->delete();
+
+        return redirect()->route('ems.ambulances')->with('success', 'Ambulance deleted successfully.');
     }
 
     public function updateAmbulanceStatus(Request $request, Ambulance $ambulance): RedirectResponse
@@ -318,7 +339,7 @@ class EmsOperationsController extends Controller
             }
         });
 
-        return redirect()->route('ems.dispatches')->with('success','Movement deleted. The record remains preserved in the audit trail.');
+        return redirect()->route('ems.dispatches')->with('success','Movement deleted successfully.');
     }
 
     public function completeDispatch(Request $request, Dispatch $dispatch): RedirectResponse
@@ -386,25 +407,46 @@ class EmsOperationsController extends Controller
                 if($latestRemaining)$ambulance->update(['odometer_km'=>$latestRemaining->odometer_km]);
             }
         });
-        return redirect()->route('ems.mileage')->with('success','Mileage reading deleted and mileage totals recalculated. The record remains preserved in the audit trail.');
+        return redirect()->route('ems.mileage')->with('success','Mileage reading deleted and mileage totals recalculated.');
     }
 
     public function storeAvailability(Request $request): RedirectResponse
     {
-        if($request->has('checks')){
-            $data=$this->validateAvailabilitySession($request);
-            if(AvailabilityCheck::whereDate('check_date',$data['check_date'])->where('period',$data['period'])->exists()){
-                throw ValidationException::withMessages(['period'=>'A '.$data['period'].' check session already exists for this date. Open that session and use Edit.']);
-            }
-            $sessionUuid=(string)Str::uuid();
-            DB::transaction(function()use($data,$sessionUuid){foreach($data['checks'] as $check)AvailabilityCheck::create(
-                $check+['session_uuid'=>$sessionUuid,'check_date'=>$data['check_date'],'period'=>$data['period'],'checked_at'=>$data['checked_at'],'recorded_by'=>auth()->id()]
-            );});
-            return back()->with('success',count($data['checks']).' availability checks saved for the session.');
+        $data=$this->validateAvailabilitySession($request);
+        if(AvailabilityCheck::whereDate('check_date',$data['check_date'])->where('period',$data['period'])->exists()){
+            throw ValidationException::withMessages(['period'=>'A '.$data['period'].' check session already exists for this date. Open that session and use Edit.']);
         }
-        $data=$request->validate(['check_date'=>'required|date|before_or_equal:today','period'=>'required|in:morning,afternoon','checked_at'=>'nullable|date_format:H:i','unit_name'=>'required|max:120','responded'=>'required|boolean','response_location'=>'nullable|max:160','observation'=>'nullable|max:1000']);
-        AvailabilityCheck::create($data+['session_uuid'=>(string)Str::uuid(),'checked_at'=>$data['checked_at']??now()->format('H:i'),'recorded_by'=>auth()->id()]);
-        return back()->with('success','Availability check saved.');
+        $sessionUuid=(string)Str::uuid();
+        DB::transaction(function()use($data,$sessionUuid){foreach($data['checks'] as $check)AvailabilityCheck::create(
+            $check+['session_uuid'=>$sessionUuid,'check_date'=>$data['check_date'],'period'=>$data['period'],'checked_at'=>$data['checked_at'],'recorded_by'=>auth()->id()]
+        );});
+        return back()->with('success',count($data['checks']).' availability checks saved for the session.');
+    }
+
+    public function storeAvailabilityUnit(Request $request): RedirectResponse
+    {
+        $data = $request->validate([
+            'name' => ['required','string','max:120',"regex:/^[\\pL\\pN .&()\\/'-]+$/u"],
+        ], ['name.regex' => 'Use letters, numbers, spaces, and standard punctuation for the unit name.']);
+        $name = (string) str($data['name'])->squish();
+        $unit = AvailabilityUnit::whereRaw('LOWER(name) = ?', [mb_strtolower($name)])->first();
+
+        if ($unit) {
+            if ($unit->is_active) {
+                throw ValidationException::withMessages(['name' => 'This unit is already available for check sessions.']);
+            }
+            $unit->update(['is_active' => true]);
+            return redirect()->route('ems.availability')->with('success',$unit->name.' restored to availability checks.');
+        }
+
+        AvailabilityUnit::create(['name' => $name, 'is_active' => true]);
+        return redirect()->route('ems.availability')->with('success',$name.' added to availability checks.');
+    }
+
+    public function destroyAvailabilityUnit(AvailabilityUnit $availabilityUnit): RedirectResponse
+    {
+        $availabilityUnit->update(['is_active' => false]);
+        return redirect()->route('ems.availability')->with('success',$availabilityUnit->name.' removed from future check sessions. Previous checks and reports are unchanged.');
     }
 
     public function showAvailabilitySession(string $session)
@@ -439,7 +481,7 @@ class EmsOperationsController extends Controller
     {
         $checks=$this->availabilitySession($session);
         DB::transaction(fn()=> $checks->each->delete());
-        return redirect()->route('ems.availability')->with('success','Check session deleted. Its history remains preserved in the audit trail.');
+        return redirect()->route('ems.availability')->with('success','Check session deleted successfully.');
     }
 
     public function storeActivity(Request $request): RedirectResponse
@@ -461,14 +503,14 @@ class EmsOperationsController extends Controller
 
     public function updateActivity(Request $request,WeeklyActivity $activity): RedirectResponse
     {
-        $activity->update($this->validateActivity($request));
+        $activity->update($this->validateActivity($request,$activity));
         return redirect()->route('ems.activities')->with('success','Activity updated successfully.');
     }
 
     public function destroyActivity(WeeklyActivity $activity): RedirectResponse
     {
         $activity->delete();
-        return redirect()->route('ems.activities')->with('success','Activity deleted. Its history remains preserved in the audit trail.');
+        return redirect()->route('ems.activities')->with('success','Activity deleted successfully.');
     }
 
     public function generateReport(Request $request): RedirectResponse
@@ -521,8 +563,6 @@ class EmsOperationsController extends Controller
             ->mapWithKeys(fn ($priority) => [$priority => $records->where('priority', $priority)->count()]);
         $ambulanceMovementCounts = $ambulances
             ->mapWithKeys(fn (Ambulance $ambulance) => [$ambulance->fleet_number => $records->where('ambulance_id', $ambulance->id)->count()]);
-        $activityCategoryCounts = collect(['operations','meeting','training','inspection','administration','outreach'])
-            ->mapWithKeys(fn ($category) => [$category => $activities->where('category', $category)->count()]);
 
         return view('ems.reports.dashboard', [
             'filters' => $filters,
@@ -551,8 +591,6 @@ class EmsOperationsController extends Controller
                 'responded' => $availabilityResponded,
                 'no_response' => $availability->count() - $availabilityResponded,
             ]),
-            'activityCategoryCounts' => $activityCategoryCounts,
-            'maxActivityCategoryCount' => max(1, (int) $activityCategoryCounts->max()),
         ]);
     }
 
@@ -584,7 +622,7 @@ class EmsOperationsController extends Controller
     {
         abort_unless(in_array($report->status, ['draft','submitted'], true), 422, 'Only draft or submitted reports can be approved.');
         $report->update(['status'=>'approved','approved_by'=>auth()->id(),'approved_at'=>now()]);
-        return back()->with('success','Report approved and its snapshot has been frozen.');
+        return back()->with('success','Report approved successfully.');
     }
 
     public function exportReport(EmsReport $report)
@@ -656,16 +694,28 @@ class EmsOperationsController extends Controller
 
     private function validateMovement(Request $request): array
     {
-        return $request->validate([
+        $data = $request->validate([
             'ambulance_id'=>['required','exists:ambulances,id'],
             'priority'=>['required',Rule::in(array_keys(config('ems.movement_priorities')))],
             'requested_at'=>['required','date','before_or_equal:now'],
             'status'=>['required',Rule::in(['requested','completed'])],
-            'origin'=>['required',Rule::in(config('ems.movement_locations'))],
+            'origin'=>['required',Rule::in([...config('ems.movement_locations'),'Other'])],
+            'origin_other'=>['nullable','required_if:origin,Other','string','max:160'],
             'destination'=>['required','different:origin',Rule::in(config('ems.movement_locations'))],
             'purpose'=>['required',Rule::in(config('ems.case_categories'))],
             'notes'=>['nullable','string','max:2000'],
-        ], ['destination.different'=>'The destination must be different from the origin.','requested_at.before_or_equal'=>'The movement date and time cannot be in the future.']);
+        ], ['destination.different'=>'The destination must be different from the origin.','requested_at.before_or_equal'=>'The movement date and time cannot be in the future.','origin.in'=>'Select a listed origin or choose Other.']);
+
+        if ($data['origin'] === 'Other') {
+            $data['origin'] = trim($data['origin_other']);
+        }
+        unset($data['origin_other']);
+
+        if (strcasecmp($data['origin'], $data['destination']) === 0) {
+            throw ValidationException::withMessages(['destination' => 'The destination must be different from the origin.']);
+        }
+
+        return $data;
     }
 
     private function validateMileage(Request $request,?MileageReading $reading=null): array
@@ -875,29 +925,41 @@ class EmsOperationsController extends Controller
 
     private function validateAvailabilitySession(Request $request,bool $editing=false): array
     {
+        $allowedUnits = Ambulance::pluck('fleet_number')->merge(AvailabilityUnit::where('is_active',true)->pluck('name'))->unique()->values()->all();
+
         return $request->validate([
             'check_date'=>'required|date|before_or_equal:today',
             'period'=>'required|in:morning,afternoon',
             'checked_at'=>'required|date_format:H:i',
             'checks'=>'required|array|min:1',
             'checks.*.id'=>$editing?'required|integer|exists:availability_checks,id':'prohibited',
-            'checks.*.unit_name'=>$editing?'prohibited':'required|string|max:120',
+            'checks.*.unit_name'=>$editing?'prohibited':['required','string','max:120','distinct',Rule::in($allowedUnits)],
             'checks.*.responded'=>'required|boolean',
             'checks.*.response_location'=>'nullable|string|max:160',
             'checks.*.observation'=>'nullable|string|max:1000',
+        ], [
+            'checks.required' => 'Select at least one unit for this check session.',
+            'checks.min' => 'Select at least one unit for this check session.',
+            'checks.*.unit_name.in' => 'Select a valid configured unit.',
+            'checks.*.unit_name.distinct' => 'Each unit can only be included once per check session.',
         ]);
     }
 
-    private function validateActivity(Request $request): array
+    private function validateActivity(Request $request,?WeeklyActivity $activity=null): array
     {
         $data=$request->validate([
-            'activity_date'=>'required|date|before_or_equal:today','category'=>'required|in:operations,meeting,training,inspection,administration,outreach',
+            'activity_date'=>['required','date','before_or_equal:today',Rule::unique('weekly_activities','activity_date')->whereNull('deleted_at')->ignore($activity?->id)],
             'description'=>'required|string|max:12000','outcome'=>'nullable|string|max:6000','requires_follow_up'=>'nullable|boolean',
             'follow_up_action'=>'nullable|required_if:requires_follow_up,1|max:2000','follow_up_owner'=>'nullable|required_if:requires_follow_up,1|max:160',
-            'follow_up_due_date'=>'nullable|date|after_or_equal:activity_date',
-        ]);
+            'follow_up_due_date'=>['nullable','date',function($attribute,$value,$fail)use($request){
+                if($request->filled('activity_date')&&Carbon::parse($value)->startOfDay()->lt(Carbon::parse($request->input('activity_date'))->startOfDay())){
+                    $fail('The follow-up due date must be on or after the activity date.');
+                }
+            }],
+        ], ['activity_date.unique'=>'An activity record already exists for this date. Open that record and add the remaining activities there.']);
         $data['description']=RichText::clean($data['description']);
         $data['outcome']=RichText::clean($data['outcome']??null);
+        $data['category']='operations';
         if(RichText::plain($data['description'])==='')throw ValidationException::withMessages(['description'=>'Please enter the activity details.']);
         $data['title']=str(RichText::plain($data['description']))->before('.')->squish()->limit(120)->toString();
         $data['requires_follow_up']=$request->boolean('requires_follow_up');
@@ -910,8 +972,7 @@ class EmsOperationsController extends Controller
     private function buildWeeklyOperationsReport(string $periodStart, string $periodEnd): array
     {
         $activities = WeeklyActivity::whereDate('activity_date','>=',$periodStart)->whereDate('activity_date','<=',$periodEnd)->get()->map(fn (WeeklyActivity $activity) => [
-            'date' => Carbon::parse($activity->activity_date)->toDateString(),
-            'category' => $activity->category,
+            'date' => $activity->activity_date->toDateString(),
             'title' => $activity->title,
             'description' => $activity->description,
             'location' => $activity->location,
@@ -924,10 +985,8 @@ class EmsOperationsController extends Controller
         ]);
         $rows = $activities->sortBy('date')->values();
         $followUps = $rows->where('requires_follow_up', true)->count();
-        $categoryCounts=$activities->groupBy('category')->map->count();
         $summary = [
             number_format($activities->count()).' departmental activities and key engagements were recorded.',
-            number_format($categoryCounts->get('meeting',0)).' meetings, '.number_format($categoryCounts->get('training',0)).' training activities, and '.number_format($categoryCounts->get('inspection',0)).' inspections were documented.',
             number_format($followUps).' activities require follow-up action.',
         ];
         $capturedActions=$activities->where('requires_follow_up',true)->pluck('follow_up_action')->filter()->unique()->values();
@@ -937,6 +996,6 @@ class EmsOperationsController extends Controller
             'Review recurring activity themes to guide staffing, training, and equipment planning.',
             'Escalate unresolved operational issues to the EMS Manager with clear owners and target dates.',
         ])));
-        return [['activities' => $rows->all(), 'total_activities' => $activities->count(), 'meetings' => $categoryCounts->get('meeting',0), 'training' => $categoryCounts->get('training',0), 'follow_ups' => $followUps], $summary, $recommendations];
+        return [['activities' => $rows->all(), 'total_activities' => $activities->count(), 'follow_ups' => $followUps], $summary, $recommendations];
     }
 }

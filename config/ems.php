@@ -17,6 +17,9 @@ return [
         'Port Security',
         'Port Fire Station',
         'Transport Pool',
+        'Berth'
+        'Anchorage',
+        'Fishing Harbour Clinic',
         'GJT',
         'Tema General Hospital',
         'International Maritime Hospital (IMaH)',
@@ -38,16 +41,4 @@ return [
         'Training or drill',
     ],
 
-    'availability_units' => [
-        'Main Clinic',
-        'Clinic B',
-        'Golden Jubilee Terminal',
-        'Transit Terminal',
-        'KUT Terminal',
-        'Port Control',
-        'Port Security',
-        'Port Fire Station',
-        'Transport Pool',
-        'Port Operations',
-    ],
 ];

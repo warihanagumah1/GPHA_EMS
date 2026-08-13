@@ -30,7 +30,7 @@ document.addEventListener('click', (event) => {
     const form = trigger.closest('form');
     if (!form) return;
 
-    form.querySelectorAll('select[data-response]').forEach((field) => {
+    form.querySelectorAll('select[data-response]:not(:disabled)').forEach((field) => {
         field.value = '1';
         field.dispatchEvent(new Event('change', { bubbles: true }));
     });

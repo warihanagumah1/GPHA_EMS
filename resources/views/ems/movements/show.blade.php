@@ -9,7 +9,7 @@
                 @if($canManage)
                     <a href="{{ route('ems.dispatches.edit',$dispatch) }}" class="gpha-button-secondary">Edit</a>
                     @if($dispatch->status==='requested')<form method="POST" action="{{ route('ems.dispatches.complete',$dispatch) }}" class="inline-flex" data-confirm-title="Complete Movement?" data-confirm-message="{{ $dispatch->reference }} will be completed and {{ $dispatch->ambulance->fleet_number }} will become available for another movement." data-confirm-label="Yes, Complete Movement" data-confirm-tone="success">@csrf @method('PATCH')<button class="gpha-button-success">Mark Complete</button></form>@endif
-                    <form method="POST" action="{{ route('ems.dispatches.destroy',$dispatch) }}" class="inline-flex" data-confirm-title="Delete Movement?" data-confirm-message="{{ $dispatch->reference }} will be removed from operational lists. Its deletion details will remain preserved in the audit trail." data-confirm-label="Yes, Delete Movement" data-confirm-tone="danger">@csrf @method('DELETE')<button class="gpha-button-danger">Delete</button></form>
+                    <form method="POST" action="{{ route('ems.dispatches.destroy',$dispatch) }}" class="inline-flex" data-confirm-title="Delete Movement?" data-confirm-message="Are you sure you want to delete movement {{ $dispatch->reference }}?" data-confirm-label="Yes, Delete Movement" data-confirm-tone="danger">@csrf @method('DELETE')<button class="gpha-button-danger">Delete</button></form>
                 @endif
                 <a href="{{ route('ems.dispatches') }}" class="gpha-button-primary">Back</a>
             </div>

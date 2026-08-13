@@ -16,6 +16,7 @@ Route::middleware(['auth','ems.access'])->group(function(){
  Route::get('/ambulances/{ambulance:uuid}',[EmsOperationsController::class,'showAmbulance'])->middleware('ems.permission:AmbulanceFleet,View')->name('ems.ambulances.show');
  Route::get('/ambulances/{ambulance:uuid}/edit',[EmsOperationsController::class,'editAmbulance'])->middleware('ems.permission:AmbulanceFleet,Manage')->name('ems.ambulances.edit');
  Route::put('/ambulances/{ambulance:uuid}',[EmsOperationsController::class,'updateAmbulance'])->middleware('ems.permission:AmbulanceFleet,Manage')->name('ems.ambulances.update');
+ Route::delete('/ambulances/{ambulance:uuid}',[EmsOperationsController::class,'destroyAmbulance'])->middleware('ems.permission:AmbulanceFleet,Manage')->name('ems.ambulances.destroy');
  Route::patch('/ambulances/{ambulance:uuid}/status',[EmsOperationsController::class,'updateAmbulanceStatus'])->middleware('ems.permission:AmbulanceFleet,Manage')->name('ems.ambulances.status');
  Route::post('/dispatches',[EmsOperationsController::class,'storeDispatch'])->middleware('ems.permission:DispatchAndMovement,Manage')->name('ems.dispatches.store');
  Route::get('/dispatches/{dispatch:uuid}',[EmsOperationsController::class,'showDispatch'])->middleware('ems.permission:DispatchAndMovement,View')->name('ems.dispatches.show');
@@ -29,6 +30,8 @@ Route::middleware(['auth','ems.access'])->group(function(){
  Route::put('/operations/mileage/{reading}',[EmsOperationsController::class,'updateMileage'])->middleware('ems.permission:AmbulanceFleet,Manage')->name('ems.mileage.update');
  Route::delete('/operations/mileage/{reading}',[EmsOperationsController::class,'destroyMileage'])->middleware('ems.permission:AmbulanceFleet,Manage')->name('ems.mileage.destroy');
  Route::post('/availability',[EmsOperationsController::class,'storeAvailability'])->middleware('ems.permission:ReadinessAndActivities,Manage')->name('ems.availability.store');
+ Route::post('/operations/availability/units',[EmsOperationsController::class,'storeAvailabilityUnit'])->middleware('ems.permission:ReadinessAndActivities,Manage')->name('ems.availability.units.store');
+ Route::delete('/operations/availability/units/{availabilityUnit}',[EmsOperationsController::class,'destroyAvailabilityUnit'])->middleware('ems.permission:ReadinessAndActivities,Manage')->name('ems.availability.units.destroy');
  Route::get('/operations/availability/sessions/{session}',[EmsOperationsController::class,'showAvailabilitySession'])->middleware('ems.permission:ReadinessAndActivities,View')->name('ems.availability.sessions.show');
  Route::get('/operations/availability/sessions/{session}/edit',[EmsOperationsController::class,'editAvailabilitySession'])->middleware('ems.permission:ReadinessAndActivities,Manage')->name('ems.availability.sessions.edit');
  Route::put('/operations/availability/sessions/{session}',[EmsOperationsController::class,'updateAvailabilitySession'])->middleware('ems.permission:ReadinessAndActivities,Manage')->name('ems.availability.sessions.update');

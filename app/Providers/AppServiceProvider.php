@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use App\Models\Ambulance;
 use App\Models\AvailabilityCheck;
+use App\Models\AvailabilityUnit;
 use App\Models\Dispatch;
 use App\Models\EmsReport;
 use App\Models\MileageReading;
@@ -26,7 +27,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        foreach([Ambulance::class,Dispatch::class,MileageReading::class,AvailabilityCheck::class,WeeklyActivity::class,EmsReport::class] as $model){
+        foreach([Ambulance::class,Dispatch::class,MileageReading::class,AvailabilityCheck::class,AvailabilityUnit::class,WeeklyActivity::class,EmsReport::class] as $model){
             $model::observe(EmsModelAuditObserver::class);
         }
     }

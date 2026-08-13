@@ -8,7 +8,7 @@
             <div class="flex flex-wrap gap-2">
                 @if($canManage)
                     <a href="{{ route('ems.mileage.edit',$reading) }}" class="gpha-button-secondary">Edit</a>
-                    <form method="POST" action="{{ route('ems.mileage.destroy',$reading) }}" class="inline-flex" data-confirm-title="Delete Mileage Reading?" data-confirm-message="The {{ number_format($reading->odometer_km) }} km reading for {{ $reading->ambulance->fleet_number }} on {{ $reading->reading_date->format('d M Y') }} will be removed from mileage reports but retained in the audit trail." data-confirm-label="Yes, Delete Reading" data-confirm-tone="danger">@csrf @method('DELETE')<button class="gpha-button-danger">Delete</button></form>
+                    <form method="POST" action="{{ route('ems.mileage.destroy',$reading) }}" class="inline-flex" data-confirm-title="Delete Mileage Reading?" data-confirm-message="Are you sure you want to delete the {{ number_format($reading->odometer_km) }} km reading for {{ $reading->ambulance->fleet_number }}?" data-confirm-label="Yes, Delete Reading" data-confirm-tone="danger">@csrf @method('DELETE')<button class="gpha-button-danger">Delete</button></form>
                 @endif
                 <a href="{{ route('ems.mileage') }}" class="gpha-button-primary">Back</a>
             </div>
