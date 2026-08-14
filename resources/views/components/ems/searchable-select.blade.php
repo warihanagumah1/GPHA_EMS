@@ -6,6 +6,7 @@
     'otherName' => null,
     'otherValue' => '',
     'otherLabel' => 'Other value',
+    'otherPlaceholder' => 'Enter another value',
 ])
 
 <div class="relative" x-data="{
@@ -29,6 +30,6 @@
         <p x-show="filtered().length===0" class="px-3 py-4 text-center font-semibold text-slate-500">No matching option</p>
     </div>
     @if($otherName)
-        <label x-cloak x-show="selected==='Other'" x-transition class="mt-3 block"><span class="gpha-label">{{ $otherLabel }} <span class="text-red-600">*</span></span><input name="{{ $otherName }}" value="{{ $otherValue }}" class="gpha-input" maxlength="160" placeholder="Enter the origin" :required="selected==='Other'" :disabled="selected!=='Other'"></label>
+        <label x-cloak x-show="selected==='Other'" x-transition class="mt-3 block"><span class="gpha-label">{{ $otherLabel }} <span class="text-red-600">*</span></span><input name="{{ $otherName }}" value="{{ $otherValue }}" class="gpha-input" maxlength="160" placeholder="{{ $otherPlaceholder }}" :required="selected==='Other'" :disabled="selected!=='Other'"></label>
     @endif
 </div>

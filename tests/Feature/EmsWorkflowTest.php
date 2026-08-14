@@ -270,7 +270,7 @@ class EmsWorkflowTest extends TestCase
         $this->assertDatabaseHas('ambulances', ['id' => $ambulance->id, 'status' => 'available', 'current_location' => 'Tema General Hospital']);
     }
 
-    public function test_movement_locations_are_searchable_and_other_origin_is_saved_as_text(): void
+    public function test_movement_locations_are_searchable_and_other_origin_and_destination_are_saved_as_text(): void
     {
         $user = User::factory()->create();
         $ambulance = $this->ambulance();
@@ -282,8 +282,11 @@ class EmsWorkflowTest extends TestCase
             ->assertSee('name="origin" x-model="selected"', false)
             ->assertSee('name="destination" x-model="selected"', false)
             ->assertSee('Search and select origin')
+            ->assertSee('Search and select destination')
+            ->assertSee('Other Destination')
             ->assertSee('No matching option')
-            ->assertSee('Berth and Anchorage')
+            ->assertSee('Berth')
+            ->assertSee('Anchorage')
             ->assertSee('Fishing Harbour Clinic')
             ->assertSeeText('Movement Date & Time')
             ->assertDontSee('24-hour');
@@ -303,6 +306,27 @@ class EmsWorkflowTest extends TestCase
             'ambulance_id' => $ambulance->id,
             'origin' => 'Community Event Grounds',
             'destination' => 'Fishing Harbour Clinic',
+        ]);
+
+        $secondAmbulance = $this->ambulance([
+            'fleet_number' => 'AMBU 8',
+            'registration_number' => 'GV 800-26',
+        ]);
+        $this->actingAs($user)->post(route('ems.dispatches.store'), [
+            'ambulance_id' => $secondAmbulance->id,
+            'priority' => 'non_emergency',
+            'requested_at' => now()->subMinute()->format('Y-m-d H:i:s'),
+            'status' => 'completed',
+            'origin' => 'Main Clinic',
+            'destination' => 'Other',
+            'destination_other' => 'Community Sports Grounds',
+            'purpose' => 'Medical coverage',
+        ])->assertRedirect();
+
+        $this->assertDatabaseHas('dispatches', [
+            'ambulance_id' => $secondAmbulance->id,
+            'origin' => 'Main Clinic',
+            'destination' => 'Community Sports Grounds',
         ]);
     }
 
@@ -570,6 +594,10 @@ class EmsWorkflowTest extends TestCase
         $this->actingAs($user)->withSession($session)->get(route('ems.availability', ['new' => 1]))
             ->assertOk()
             ->assertSee('Availability Check Units')
+            ->assertSee('x-show="!unitPanelOpen"', false)
+            ->assertSee('@click="unitPanelOpen=true"', false)
+            ->assertSee('@click="unitPanelOpen=false"', false)
+            ->assertSee('>Close</button>', false)
             ->assertSee('Fishing Harbour Clinic')
             ->assertSee('aria-label="Include Fishing Harbour Clinic"', false);
 

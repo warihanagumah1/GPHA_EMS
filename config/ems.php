@@ -17,7 +17,7 @@ return [
         'Port Security',
         'Port Fire Station',
         'Transport Pool',
-        'Berth'
+        'Berth',
         'Anchorage',
         'Fishing Harbour Clinic',
         'GJT',

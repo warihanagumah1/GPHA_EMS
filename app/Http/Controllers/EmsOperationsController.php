@@ -701,15 +701,19 @@ class EmsOperationsController extends Controller
             'status'=>['required',Rule::in(['requested','completed'])],
             'origin'=>['required',Rule::in([...config('ems.movement_locations'),'Other'])],
             'origin_other'=>['nullable','required_if:origin,Other','string','max:160'],
-            'destination'=>['required','different:origin',Rule::in(config('ems.movement_locations'))],
+            'destination'=>['required',Rule::in([...config('ems.movement_locations'),'Other'])],
+            'destination_other'=>['nullable','required_if:destination,Other','string','max:160'],
             'purpose'=>['required',Rule::in(config('ems.case_categories'))],
             'notes'=>['nullable','string','max:2000'],
-        ], ['destination.different'=>'The destination must be different from the origin.','requested_at.before_or_equal'=>'The movement date and time cannot be in the future.','origin.in'=>'Select a listed origin or choose Other.']);
+        ], ['requested_at.before_or_equal'=>'The movement date and time cannot be in the future.','origin.in'=>'Select a listed origin or choose Other.','destination.in'=>'Select a listed destination or choose Other.']);
 
         if ($data['origin'] === 'Other') {
             $data['origin'] = trim($data['origin_other']);
         }
-        unset($data['origin_other']);
+        if ($data['destination'] === 'Other') {
+            $data['destination'] = trim($data['destination_other']);
+        }
+        unset($data['origin_other'], $data['destination_other']);
 
         if (strcasecmp($data['origin'], $data['destination']) === 0) {
             throw ValidationException::withMessages(['destination' => 'The destination must be different from the origin.']);

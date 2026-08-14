@@ -165,12 +165,14 @@
     </section>
 
     @if($canManage)
-    <section class="gpha-panel overflow-hidden">
-        <div class="flex flex-col gap-4 border-b border-slate-200 px-5 py-4 lg:flex-row lg:items-end lg:justify-between">
-            <div><h2 class="text-xl font-black">Availability Check Units</h2><p class="font-semibold text-slate-500">Add or remove units used in future check sessions. Saved sessions and reports keep their original unit names.</p></div>
-            <form method="POST" action="{{ route('ems.availability.units.store') }}" class="flex w-full flex-col gap-2 sm:flex-row lg:max-w-xl">@csrf
+    <div x-data="{unitPanelOpen:@js($errors->has('name') || request()->boolean('manage_units'))}">
+        <div x-show="!unitPanelOpen" class="flex justify-end"><button type="button" @click="unitPanelOpen=true" class="gpha-button-primary">Manage Units</button></div>
+    <section x-cloak x-show="unitPanelOpen" x-transition class="gpha-panel overflow-hidden">
+        <div class="border-b border-slate-200 px-5 py-4">
+            <div class="flex flex-wrap items-start justify-between gap-3"><div><h2 class="text-xl font-black">Availability Check Units</h2><p class="font-semibold text-slate-500">Add or remove units.</p></div><button type="button" @click="unitPanelOpen=false" class="gpha-button-secondary">Close</button></div>
+            <form method="POST" action="{{ route('ems.availability.units.store') }}" class="mt-4 flex w-full flex-col gap-2 sm:flex-row lg:max-w-xl">@csrf
                 <label class="flex-1"><span class="gpha-label">New Unit</span><input name="name" value="{{ old('name') }}" class="gpha-input" maxlength="120" placeholder="Enter unit name" required></label>
-                <div class="flex items-end"><button class="gpha-button-primary w-full whitespace-nowrap">Add Unit</button></div>
+                <div class="flex items-end"><button class="gpha-button-primary w-full whitespace-nowrap">Save Unit</button></div>
             </form>
         </div>
         <div class="overflow-x-auto"><table class="gpha-table"><thead><tr><th>Unit Name</th><th>Status</th><th class="gpha-actions-heading">Action</th></tr></thead><tbody>
@@ -181,6 +183,7 @@
         </tbody></table></div>
         <div class="border-t border-slate-200 px-5 py-4">{{ $managedAvailabilityUnits->links() }}</div>
     </section>
+    </div>
     @endif
     @endif
 
