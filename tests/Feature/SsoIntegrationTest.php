@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\EmsReport;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -19,6 +20,7 @@ class SsoIntegrationTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        Cache::flush();
         config([
             'gpha_sso.shared_secret' => $this->secret,
             'gpha_sso.issuer' => 'GPHACentralLogin',
@@ -61,6 +63,56 @@ class SsoIntegrationTest extends TestCase
             && $request->hasHeader('X-App-Id', 'EMS')
             && $request->hasHeader('X-App-Key', 'test-app-key')
             && ! $request->hasHeader('Authorization'));
+    }
+
+    public function test_signed_permission_codes_skip_the_permission_api(): void
+    {
+        Http::preventStrayRequests();
+        $id = (string) Str::uuid();
+        $token = $this->token([
+            'UserId' => $id,
+            'permissionCodes' => [
+                'EMS.AmbulanceFleet.View',
+                'EMS.EMSReports.View',
+            ],
+        ]);
+
+        $response = $this->get(route('sso.login', ['token' => $token]));
+
+        $response->assertRedirect(route('dashboard'));
+        $response->assertSessionHas('sso.permissions.ambulancefleet', ['view']);
+        Http::assertNothingSent();
+    }
+
+    public function test_permission_api_result_and_shadow_password_are_reused_on_repeat_sign_in(): void
+    {
+        $id = (string) Str::uuid();
+        Http::fake(['*' => Http::response([
+            'permissionCodes' => ['EMS.AmbulanceFleet.View'],
+        ], 200)]);
+        $token = $this->token(['UserId' => $id]);
+
+        $this->get(route('sso.login', ['token' => $token]))->assertRedirect(route('dashboard'));
+        $password = User::where('sso_user_id', $id)->value('password');
+
+        $this->get(route('sso.login', ['token' => $token]))->assertRedirect(route('dashboard'));
+
+        Http::assertSentCount(1);
+        $this->assertSame($password, User::where('sso_user_id', $id)->value('password'));
+    }
+
+    public function test_successful_sso_login_redirects_to_the_intended_page(): void
+    {
+        $id = (string) Str::uuid();
+        Http::fake(['*' => Http::response([
+            'permissionCodes' => ['EMS.AmbulanceFleet.View'],
+        ], 200)]);
+        $intended = route('ems.ambulances');
+        $token = $this->token(['UserId' => $id]);
+
+        $this->withSession(['url.intended' => $intended])
+            ->get(route('sso.login', ['token' => $token]))
+            ->assertRedirect($intended);
     }
 
     public function test_session_cookie_is_available_to_the_dashboard(): void

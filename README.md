@@ -131,6 +131,12 @@ GPHA_SSO_APP_ACCESS_PERMISSIONS_ENDPOINT=https://central-login-api.example.org/a
 
 `GPHA_SSO_RETURN_URL` must point to the deployed EMS `/sso/login` route and must match the return URL registered in Central Login.
 
+Central Login may include an array of full EMS permission codes in the signed
+`permissionCodes` claim. When present, EMS uses those verified permissions and
+does not make a separate permission API request. When absent, EMS falls back to
+the permission API and caches its result per user and module for
+`GPHA_SSO_PERMISSION_CACHE_SECONDS` seconds.
+
 ## Operational modules
 
 ### Ambulance fleet
@@ -413,6 +419,10 @@ php artisan optimize:clear
 php artisan config:clear
 php artisan view:clear
 ```
+
+Run `composer deploy:optimize` after each production release to cache Laravel's
+configuration, events, routes, and views. Configuration changes in `.env` do not
+take effect until the optimization cache is rebuilt.
 
 ## Security notes
 
