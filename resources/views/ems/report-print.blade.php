@@ -17,10 +17,12 @@
     $canSubmit=!$guestApproval&&$report->status==='draft'&&(int)$report->prepared_by===(int)auth()->id()&&($testingAccess||$reportPermissions->allows('EMSReports','Manage'));
     $canApprove=$guestApproval
         ? $report->status==='submitted'
-        : $report->status==='submitted'&&($testingAccess||$reportPermissions->allows('EMSReports','Approve'));
-    $reportFileUrl=fn(string $file)=>$guestApproval
-        ? \Illuminate\Support\Facades\URL::temporarySignedRoute('ems.reports.guest-file',now()->addHours((int)config('ems.report_approval_link_hours',72)),['report'=>$report,'file'=>$file])
-        : route('ems.reports.file',[$report,$file]);
+        : auth()->check()&&$report->status==='submitted'&&$reportPermissions->allows('EMSReports','Approve');
+    $reportFileUrl=function(string $file)use($guestApproval,$report){
+        if(!$guestApproval)return route('ems.reports.file',[$report,$file]);
+        $signedPath=\Illuminate\Support\Facades\URL::temporarySignedRoute('ems.reports.guest-file',now()->addHours((int)config('ems.report_approval_link_hours',72)),['report'=>$report,'file'=>$file],absolute:false);
+        return rtrim((string)config('app.url'),'/').'/'.ltrim($signedPath,'/');
+    };
 @endphp
 <title>{{ $title }} · {{ $report->period_end->format('d M Y') }}</title>
 <style>

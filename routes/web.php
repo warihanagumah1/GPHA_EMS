@@ -3,7 +3,7 @@ use App\Application\Sso\CentralLoginUrl;use App\Http\Controllers\EmsOperationsCo
 Route::get('/',function(Request $request){if($request->filled('token'))return redirect()->route('sso.login',['token'=>$request->query('token')]);if(app()->environment('testing')&&!auth()->check())return view('welcome');return auth()->check()?redirect()->route('dashboard'):redirect()->away(app(CentralLoginUrl::class)->loginUrl());})->name('home');
 Route::get('/sso/login',SsoLoginController::class)->name('sso.login');Route::get('/sso/consume',SsoLoginController::class)->name('sso.consume');
 Route::get('/api/runtime-config',fn()=>response()->json(['centralLoginUrl'=>config('gpha_sso.central_login_url'),'ssoReturnUrl'=>app(CentralLoginUrl::class)->returnUrl()]))->name('runtime-config');
-Route::middleware('signed')->prefix('report-approval')->group(function(){
+Route::middleware('signed:relative')->prefix('report-approval')->group(function(){
  Route::get('/{report:uuid}',[EmsOperationsController::class,'guestApproval'])->name('ems.reports.guest-approval');
  Route::patch('/{report:uuid}',[EmsOperationsController::class,'guestApproveReport'])->name('ems.reports.guest-approve');
  Route::get('/{report:uuid}/files/{file}',[EmsOperationsController::class,'guestReportFile'])->whereIn('file',['submitter-signature','approver-signature','signed-report'])->name('ems.reports.guest-file');

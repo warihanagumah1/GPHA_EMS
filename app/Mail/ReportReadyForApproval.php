@@ -27,11 +27,13 @@ class ReportReadyForApproval extends Mailable
         $this->approvalLinkHours = max(1, (int) config('ems.report_approval_link_hours', 72));
         $expiresAt = now()->addHours($this->approvalLinkHours);
         $this->approvalExpiresAt = $expiresAt->format('d M Y, H:i');
-        $this->approvalUrl = URL::temporarySignedRoute(
+        $signedPath = URL::temporarySignedRoute(
             'ems.reports.guest-approval',
             $expiresAt,
             ['report' => $report, 'approver' => $this->approverEmail],
+            absolute: false,
         );
+        $this->approvalUrl = rtrim((string) config('app.url'), '/').'/'.ltrim($signedPath, '/');
     }
 
     public function envelope(): Envelope

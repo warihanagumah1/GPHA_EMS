@@ -593,6 +593,23 @@ class EmsWorkflowTest extends TestCase
             ->assertDontSee('Movement volume handled by the selected ambulance.');
     }
 
+    public function test_dashboard_displays_the_current_users_normalized_permission_dump(): void
+    {
+        $user = User::factory()->create();
+        $permissions = [
+            'emsreports' => ['view', 'manage'],
+            'ambulancefleet' => ['view'],
+        ];
+
+        $this->actingAs($user)->withSession(['sso.permissions' => $permissions])->get(route('dashboard'))
+            ->assertOk()
+            ->assertSee('data-user-permissions', false)
+            ->assertSee('Current User Permissions')
+            ->assertSee('&quot;emsreports&quot;', false)
+            ->assertSee('&quot;manage&quot;', false)
+            ->assertDontSee('&quot;approve&quot;', false);
+    }
+
     public function test_movement_list_can_be_filtered_by_operational_fields(): void
     {
         $user=User::factory()->create();
@@ -1045,11 +1062,13 @@ class EmsWorkflowTest extends TestCase
         Storage::disk('local')->assertExists($report->submitter_signature_path);
         Mail::assertSent(ReportReadyForApproval::class, function (ReportReadyForApproval $mail) use ($report, $submitter) {
             $html = $mail->render();
+            $samePathOnInternalHost = preg_replace('#^https?://[^/]+#', 'http://172.16.0.81', $mail->approvalUrl);
 
             return $mail->hasTo('emasiedu@ghanaports.gov.gov.gh')
                 && $mail->report->is($report)
                 && str_contains($mail->approvalUrl, '/report-approval/'.$report->uuid)
-                && URL::hasValidSignature(\Illuminate\Http\Request::create($mail->approvalUrl))
+                && URL::hasValidRelativeSignature(\Illuminate\Http\Request::create($mail->approvalUrl))
+                && URL::hasValidRelativeSignature(\Illuminate\Http\Request::create($samePathOnInternalHost))
                 && str_contains($html, 'EMS Report Ready for Approval')
                 && str_contains($html, 'Dear Dr. Emile,')
                 && str_contains($html, 'Review &amp; Sign Report')
@@ -1066,7 +1085,7 @@ class EmsWorkflowTest extends TestCase
         Mail::assertSent(ReportReadyForApproval::class, fn (ReportReadyForApproval $mail) => $mail->hasTo('ama.mensah@ghanaports.gov.gh') && str_contains($mail->render(), 'Dear Dr. Ama Mensah,'));
 
         $uploadedSignature = UploadedFile::fake()->createWithContent('director-signature.png', base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='));
-        $this->actingAs($approver)->patch(route('ems.reports.approve', $report), [
+        $this->actingAs($approver)->withSession(['sso.permissions' => ['emsreports' => ['view', 'approve']]])->patch(route('ems.reports.approve', $report), [
             'signature_file' => $uploadedSignature,
             'signature_confirmation' => '1',
         ])->assertRedirect();
@@ -1112,7 +1131,7 @@ class EmsWorkflowTest extends TestCase
 
         $this->get(route('ems.reports.guest-approval', $report))->assertForbidden();
 
-        $approvalUrl = URL::temporarySignedRoute('ems.reports.guest-approval', now()->addHours(48), ['report' => $report]);
+        $approvalUrl = URL::temporarySignedRoute('ems.reports.guest-approval', now()->addHours(48), ['report' => $report], absolute: false);
         $review = $this->get($approvalUrl)
             ->assertOk()
             ->assertSee('Approve Report')
@@ -1123,7 +1142,7 @@ class EmsWorkflowTest extends TestCase
         $signatureUrl = URL::temporarySignedRoute('ems.reports.guest-file', now()->addHours(48), [
             'report' => $report,
             'file' => 'submitter-signature',
-        ]);
+        ], absolute: false);
         $this->get($signatureUrl)->assertOk();
         $this->get(route('ems.reports.guest-file', [$report, 'submitter-signature']))->assertForbidden();
 
@@ -1195,11 +1214,54 @@ class EmsWorkflowTest extends TestCase
         Storage::disk('local')->assertExists($report->approver_signature_path);
     }
 
+    public function test_a_report_submitter_without_approve_permission_cannot_see_or_use_approval(): void
+    {
+        Storage::fake('local');
+        $user = User::factory()->create([
+            'sso_user_id' => (string) Str::uuid(),
+            'name' => 'Report Submitter',
+        ]);
+        $report = EmsReport::withoutGlobalScopes()->create([
+            'type' => 'mileage',
+            'period_start' => today(),
+            'period_end' => today(),
+            'status' => 'submitted',
+            'snapshot' => [],
+            'prepared_by' => $user->id,
+            'submitted_by' => $user->id,
+            'submitted_at' => now(),
+            'branch_code' => 'HQ',
+        ]);
+        $session = [
+            'sso.permissions_synced_at' => now()->timestamp,
+            'sso.active_branch_code' => 'HQ',
+            'sso.branches.codes' => ['HQ'],
+            'sso.permissions' => ['emsreports' => ['view', 'manage']],
+        ];
+
+        $this->actingAs($user)->withSession($session)->get(route('ems.reports.print', $report))
+            ->assertOk()
+            ->assertDontSee('Approve Report')
+            ->assertDontSee('Sign &amp; Approve Report', false);
+
+        $signature = 'data:image/png;base64,'.base64_encode(base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='));
+        $this->actingAs($user)->withSession($session)->patch(route('ems.reports.approve', $report), [
+            'signature_data' => $signature,
+            'signature_confirmation' => '1',
+        ])->assertForbidden();
+
+        $report->refresh();
+        $this->assertSame('submitted', $report->status);
+        $this->assertNull($report->approved_at);
+        $this->assertNull($report->approver_signature_path);
+    }
+
     public function test_the_approval_form_has_only_one_upload_and_rejects_physical_report_pdfs(): void
     {
         Storage::fake('local');
         $submitter = User::factory()->create();
         $approver = User::factory()->create();
+        $approveSession = ['sso.permissions' => ['emsreports' => ['view', 'approve']]];
         $report = EmsReport::create([
             'type' => 'mileage',
             'period_start' => today(),
@@ -1211,13 +1273,13 @@ class EmsWorkflowTest extends TestCase
             'submitted_at' => now(),
         ]);
 
-        $this->actingAs($approver)->get(route('ems.reports.print', $report))
+        $this->actingAs($approver)->withSession($approveSession)->get(route('ems.reports.print', $report))
             ->assertOk()
             ->assertSee('name="signature_file"', false)
             ->assertDontSee('name="signed_report"', false)
             ->assertDontSee('Upload a physically signed report');
 
-        $this->actingAs($approver)->patch(route('ems.reports.approve', $report), [
+        $this->actingAs($approver)->withSession($approveSession)->patch(route('ems.reports.approve', $report), [
             'signed_report' => UploadedFile::fake()->create('signed-report.pdf', 100, 'application/pdf'),
             'signature_confirmation' => '1',
         ])->assertSessionHasErrors('signed_report');

@@ -659,6 +659,11 @@ class EmsOperationsController extends Controller
 
     public function approveReport(Request $request, EmsReport $report): RedirectResponse
     {
+        abort_unless(
+            auth()->check() && app(PermissionService::class)->allows('EMSReports', 'Approve'),
+            403,
+            'You do not have permission to approve EMS reports.',
+        );
         abort_unless($report->status === 'submitted', 422, 'Only submitted reports can be approved.');
 
         $signature = $this->storeReportSignature($request, $report, 'approver');
@@ -726,11 +731,14 @@ class EmsOperationsController extends Controller
 
     private function temporaryReportUrl(string $route, EmsReport $report, array $parameters = []): string
     {
-        return URL::temporarySignedRoute(
+        $signedPath = URL::temporarySignedRoute(
             $route,
             now()->addHours((int) config('ems.report_approval_link_hours', 72)),
             ['report' => $report, ...$parameters],
+            absolute: false,
         );
+
+        return rtrim((string) config('app.url'), '/').'/'.ltrim($signedPath, '/');
     }
 
     private function storeReportSignature(Request $request, EmsReport $report, string $party): array

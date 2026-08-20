@@ -6,6 +6,16 @@
 
     @if($errors->any())<x-dismissible-alert type="error">{{ $errors->first() }}</x-dismissible-alert>@endif
 
+    {{-- Temporary permissions dump (uncomment when debugging SSO permissions).
+    <section class="gpha-panel overflow-hidden" data-user-permissions>
+        <div class="border-b border-slate-200 px-5 py-4">
+            <h2 class="text-xl font-black text-slate-950">Current User Permissions</h2>
+            <p class="mt-1 font-semibold text-slate-500">Normalized permissions currently loaded in this user’s EMS session.</p>
+        </div>
+        <pre class="overflow-x-auto bg-slate-950 p-5 text-sm leading-6 text-emerald-300">{{ json_encode(session('sso.permissions', []), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) }}</pre>
+    </section>
+    --}}
+
     <section class="gpha-panel p-5" x-data="{filtersOpen:false,dashboardPeriod:@js($filters['period_preset'])}">
         <x-ems.mobile-filter-toggle />
         <form method="GET" action="{{ route('dashboard') }}" :class="filtersOpen ? '!grid' : 'hidden'" class="hidden gap-4 md:!grid md:grid-cols-2 lg:grid-cols-4">
