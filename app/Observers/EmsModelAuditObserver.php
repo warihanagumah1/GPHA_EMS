@@ -7,6 +7,7 @@ use App\Models\AvailabilityCheck;
 use App\Models\Dispatch;
 use App\Models\EmsAuditLog;
 use App\Models\EmsReport;
+use App\Models\Location;
 use App\Models\MileageReading;
 use App\Models\WeeklyActivity;
 use Illuminate\Database\Eloquent\Model;
@@ -61,6 +62,7 @@ class EmsModelAuditObserver
             $model instanceof AvailabilityCheck=>implode(' / ',[$model->check_date?->format('Y-m-d')??$model->check_date,$model->period,$model->unit_name]),
             $model instanceof MileageReading=>implode(' / ',[$model->ambulance_id,$model->reading_date?->format('Y-m-d')??$model->reading_date]),
             $model instanceof WeeklyActivity=>(string)$model->title,
+            $model instanceof AvailabilityUnit, $model instanceof Location=>(string)$model->name,
             default=>(string)$model->getKey(),
         };
     }
@@ -85,4 +87,3 @@ class EmsModelAuditObserver
         ]);
     }
 }
-

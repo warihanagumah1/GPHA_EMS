@@ -1,7 +1,7 @@
-@props(['ambulances', 'movement' => null, 'action' => null, 'method' => 'POST', 'submitLabel' => 'Save Movement'])
+@props(['ambulances', 'locations', 'movement' => null, 'action' => null, 'method' => 'POST', 'submitLabel' => 'Save Movement'])
 
 @php
-    $locations = config('ems.movement_locations');
+    $locations = collect($locations)->values()->all();
     $savedOrigin = old('origin', $movement?->origin);
     $originChoice = in_array($savedOrigin, $locations, true) || $savedOrigin === 'Other' ? $savedOrigin : (filled($savedOrigin) ? 'Other' : '');
     $otherOrigin = old('origin_other', $originChoice === 'Other' && $savedOrigin !== 'Other' ? $savedOrigin : '');

@@ -8,7 +8,7 @@
             <x-dismissible-alert type="error"><p class="font-extrabold">Please correct the following:</p><ul class="mt-1 list-disc pl-5">@foreach($errors->all() as $error)<li>{{ $error }}</li>@endforeach</ul></x-dismissible-alert>
         @endif
         <section class="gpha-panel p-5">
-            <x-ems.ambulance-form :ambulance="$ambulance" :action="route('ems.ambulances.update', $ambulance)" method="PUT" submit-label="Update Ambulance" />
+            <x-ems.ambulance-form :ambulance="$ambulance" :locations="$locations" :action="route('ems.ambulances.update', $ambulance)" method="PUT" submit-label="Update Ambulance" />
         </section>
     </div>
 </x-app-layout>

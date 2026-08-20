@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Application\Sso\PermissionService;
+use App\Mail\ReportReadyForApproval;
 use Carbon\Carbon;
 use App\Models\Ambulance;
 use App\Models\AvailabilityCheck;
@@ -10,29 +12,26 @@ use App\Models\Dispatch;
 use App\Models\EmsReport;
 use App\Models\EmsAuditLog;
 use App\Models\MileageReading;
+use App\Models\Location;
 use App\Models\WeeklyActivity;
 use App\Support\RichText;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class EmsOperationsController extends Controller
 {
-    public function dashboard()
+    public function dashboard(Request $request)
     {
-        return view('ems.dashboard', [
-            'ambulances' => Ambulance::orderBy('fleet_number')->get(),
-            'activeDispatches' => Dispatch::with('ambulance')->whereNotIn('status', ['completed', 'cancelled'])->latest('requested_at')->get(),
-            'recentDispatches' => Dispatch::with('ambulance')->latest('requested_at')->limit(6)->get(),
-            'completedToday' => Dispatch::where('status', 'completed')->whereDate('completed_at', today())->count(),
-            'emergencyActive' => Dispatch::where('priority', 'emergency')->whereNotIn('status', ['completed', 'cancelled'])->count(),
-            'checksToday' => AvailabilityCheck::whereDate('check_date', today())->count(),
-            'negativeChecksToday' => AvailabilityCheck::whereDate('check_date', today())->where('responded', false)->count(),
-            'followUps' => WeeklyActivity::where('requires_follow_up', true)->whereDate('activity_date', '>=', now()->subDays(14))->count(),
-        ]);
+        return view('ems.dashboard', $this->analyticsData($request));
     }
 
     public function index(Request $request, string $module)
@@ -115,7 +114,7 @@ class EmsOperationsController extends Controller
             $availabilityFilters = $request->validate([
                 'date_from' => ['nullable','date'],
                 'date_to' => ['nullable','date','after_or_equal:date_from'],
-                'period' => ['nullable',Rule::in(['morning','afternoon'])],
+                'period' => ['nullable',Rule::in(['morning','afternoon','evening'])],
                 'response_status' => ['nullable',Rule::in(['all_responded','has_no_response'])],
             ]);
             $checks = AvailabilityCheck::query()
@@ -153,12 +152,10 @@ class EmsOperationsController extends Controller
         }
 
         $ambulances = Ambulance::orderBy('fleet_number')->get();
-        $managedAvailabilityUnits = $module === 'availability'
-            ? AvailabilityUnit::orderBy('name')->paginate(15,['*'],'units_page')->withQueryString()
-            : collect();
         $activeAvailabilityUnitNames = $module === 'availability'
             ? AvailabilityUnit::where('is_active',true)->orderBy('name')->pluck('name')
             : collect();
+        $locations = Location::activeNames();
         $fleet = $module === 'ambulances'
             ? Ambulance::orderBy('fleet_number')->paginate(15)->withQueryString()
             : collect();
@@ -176,8 +173,8 @@ class EmsOperationsController extends Controller
             'readings' => $readings,
             'checks' => $checks,
             'activities' => $activities,
-            'managedAvailabilityUnits' => $managedAvailabilityUnits,
             'availabilityUnits' => collect($ambulances->pluck('fleet_number'))->merge($activeAvailabilityUnitNames)->unique()->values(),
+            'locations' => $locations,
         ]);
     }
 
@@ -221,7 +218,9 @@ class EmsOperationsController extends Controller
 
     public function editAmbulance(Ambulance $ambulance)
     {
-        return view('ems.ambulances.edit', compact('ambulance'));
+        $locations = Location::activeNames()->push($ambulance->base_location)->filter()->unique()->sort()->values();
+
+        return view('ems.ambulances.edit', compact('ambulance', 'locations'));
     }
 
     public function updateAmbulance(Request $request, Ambulance $ambulance): RedirectResponse
@@ -295,12 +294,13 @@ class EmsOperationsController extends Controller
         return view('ems.movements.edit', [
             'dispatch' => $dispatch,
             'ambulances' => Ambulance::orderBy('fleet_number')->get(),
+            'locations' => Location::activeNames(),
         ]);
     }
 
     public function updateDispatch(Request $request, Dispatch $dispatch): RedirectResponse
     {
-        $data = $this->validateMovement($request);
+        $data = $this->validateMovement($request, $dispatch);
         $newAmbulance = Ambulance::findOrFail($data['ambulance_id']);
 
         if (($dispatch->status === 'completed' || $data['status'] === 'completed') && $newAmbulance->id !== $dispatch->ambulance_id) {
@@ -423,32 +423,6 @@ class EmsOperationsController extends Controller
         return back()->with('success',count($data['checks']).' availability checks saved for the session.');
     }
 
-    public function storeAvailabilityUnit(Request $request): RedirectResponse
-    {
-        $data = $request->validate([
-            'name' => ['required','string','max:120',"regex:/^[\\pL\\pN .&()\\/'-]+$/u"],
-        ], ['name.regex' => 'Use letters, numbers, spaces, and standard punctuation for the unit name.']);
-        $name = (string) str($data['name'])->squish();
-        $unit = AvailabilityUnit::whereRaw('LOWER(name) = ?', [mb_strtolower($name)])->first();
-
-        if ($unit) {
-            if ($unit->is_active) {
-                throw ValidationException::withMessages(['name' => 'This unit is already available for check sessions.']);
-            }
-            $unit->update(['is_active' => true]);
-            return redirect()->route('ems.availability')->with('success',$unit->name.' restored to availability checks.');
-        }
-
-        AvailabilityUnit::create(['name' => $name, 'is_active' => true]);
-        return redirect()->route('ems.availability')->with('success',$name.' added to availability checks.');
-    }
-
-    public function destroyAvailabilityUnit(AvailabilityUnit $availabilityUnit): RedirectResponse
-    {
-        $availabilityUnit->update(['is_active' => false]);
-        return redirect()->route('ems.availability')->with('success',$availabilityUnit->name.' removed from future check sessions. Previous checks and reports are unchanged.');
-    }
-
     public function showAvailabilitySession(string $session)
     {
         $checks=$this->availabilitySession($session);
@@ -458,7 +432,9 @@ class EmsOperationsController extends Controller
     public function editAvailabilitySession(string $session)
     {
         $checks=$this->availabilitySession($session);
-        return view('ems.availability.edit',compact('checks','session'));
+        $locations = Location::activeNames()->merge($checks->pluck('response_location'))->filter()->unique()->sort()->values();
+
+        return view('ems.availability.edit',compact('checks','session','locations'));
     }
 
     public function updateAvailabilitySession(Request $request,string $session): RedirectResponse
@@ -515,13 +491,7 @@ class EmsOperationsController extends Controller
 
     public function generateReport(Request $request): RedirectResponse
     {
-        $request->merge(['period_preset'=>$request->input('period_preset','custom')]);
-        $data=$request->validate([
-            'type'=>['required',Rule::in(['mileage','weekly_activity','availability'])],
-            'period_preset'=>['required',Rule::in(['today','yesterday','this_week','last_week','this_month','last_month','this_quarter','last_quarter','last_six_months','this_year','last_year','custom'])],
-            'period_start'=>['nullable','required_if:period_preset,custom','date'],
-            'period_end'=>['nullable','required_if:period_preset,custom','date','after_or_equal:period_start'],
-        ]);
+        $data = $this->validateReportDefinition($request);
         [$periodStart,$periodEnd,$periodLabel]=$this->reportPeriodDates($data);
         [$snapshot,$summary,$recommendations]=$this->buildPrintableReport($data['type'],$periodStart,$periodEnd);
         $snapshot['reporting_period_label']=$periodLabel??'Custom Dates';
@@ -542,56 +512,92 @@ class EmsOperationsController extends Controller
 
     public function reportsDashboard(Request $request)
     {
-        $filters = $this->reportFilters($request);
-        $query = $this->filteredMovements($filters);
-        $records = (clone $query)->oldest('requested_at')->get();
-        $completed = $records->where('status', 'completed');
-        $ambulances = Ambulance::orderBy('fleet_number')->get();
-        $statusOrder = ['requested', 'completed'];
-        $statusCounts = collect($statusOrder)->mapWithKeys(fn ($status) => [$status => $records->where('status', $status)->count()]);
-        $dailyCounts = $records->groupBy(fn (Dispatch $movement) => $movement->requested_at->format('Y-m-d'))
-            ->map->count()
-            ->sortKeys();
-        $maxDaily = max(1, (int) $dailyCounts->max());
-        $availability = AvailabilityCheck::whereDate('check_date','>=',$filters['period_start'])->whereDate('check_date','<=',$filters['period_end'])->get();
-        $activities = WeeklyActivity::whereDate('activity_date','>=',$filters['period_start'])->whereDate('activity_date','<=',$filters['period_end'])->get();
-        $totalMovements = $records->count();
-        $ambulancesUsed = $records->pluck('ambulance_id')->filter()->unique()->count();
-        $emergencyMovements = $records->where('priority', 'emergency')->count();
-        $availabilityResponded = $availability->where('responded', true)->count();
-        $priorityCounts = collect(array_keys(config('ems.movement_priorities')))
-            ->mapWithKeys(fn ($priority) => [$priority => $records->where('priority', $priority)->count()]);
-        $ambulanceMovementCounts = $ambulances
-            ->mapWithKeys(fn (Ambulance $ambulance) => [$ambulance->fleet_number => $records->where('ambulance_id', $ambulance->id)->count()]);
+        $reportFilters = $request->validate([
+            'report_status' => ['nullable', Rule::in(['draft','submitted','approved'])],
+            'report_type' => ['nullable', Rule::in(['mileage','weekly_activity','availability'])],
+            'report_date_from' => ['nullable', 'required_with:report_date_to', 'date_format:Y-m-d'],
+            'report_date_to' => ['nullable', 'required_with:report_date_from', 'date_format:Y-m-d', 'after_or_equal:report_date_from'],
+            'report_tab' => ['nullable', Rule::in(['all','submitted','approved'])],
+        ]);
+        $approverTabs = app(PermissionService::class)->allows('EMSReports', 'Approve');
+        $activeReportTab = $approverTabs ? ($reportFilters['report_tab'] ?? 'all') : null;
+        $reports = EmsReport::with(['preparedBy','submittedBy','approvedBy'])
+            ->when(!$approverTabs, fn ($query) => $query->where(fn ($query) => $query
+                ->where('prepared_by', auth()->id())
+                ->orWhere('submitted_by', auth()->id())))
+            ->when($approverTabs && $activeReportTab !== 'all', fn ($query) => $query->where('status', $activeReportTab))
+            ->when(!$approverTabs && filled($reportFilters['report_status'] ?? null), fn ($query) => $query->where('status', $reportFilters['report_status']))
+            ->when(filled($reportFilters['report_type'] ?? null), fn ($query) => $query->where('type', $reportFilters['report_type']))
+            ->when(filled($reportFilters['report_date_from'] ?? null), fn ($query) => $query->whereDate('created_at', '>=', $reportFilters['report_date_from']))
+            ->when(filled($reportFilters['report_date_to'] ?? null), fn ($query) => $query->whereDate('created_at', '<=', $reportFilters['report_date_to']))
+            ->latest('created_at')
+            ->paginate(15)
+            ->withQueryString();
+        [$periodStart, $periodEnd] = $this->reportPeriodDates(['period_preset' => 'this_week']);
 
         return view('ems.reports.dashboard', [
-            'filters' => $filters,
-            'ambulances' => $ambulances,
-            'totalMovements' => $totalMovements,
-            'completedMovements' => $completed->count(),
-            'activeMovements' => $records->whereIn('status', ['requested', 'dispatched', 'arrived'])->count(),
-            'emergencyMovements' => $emergencyMovements,
-            'emergencyRate' => $totalMovements ? round(($emergencyMovements / $totalMovements) * 100, 1) : 0,
-            'ambulancesUsed' => $ambulancesUsed,
-            'totalAmbulances' => $ambulances->count(),
-            'fleetUtilizationRate' => $ambulances->isEmpty() ? 0 : round(($ambulancesUsed / $ambulances->count()) * 100, 1),
-            'completionRate' => $records->isEmpty() ? 0 : round(($completed->count() / $records->count()) * 100, 1),
-            'statusCounts' => $statusCounts,
-            'dailyCounts' => $dailyCounts,
-            'maxDaily' => $maxDaily,
-            'availabilityChecks' => $availability->count(),
-            'availabilityResponded' => $availabilityResponded,
-            'availabilityRate' => $availability->isEmpty() ? null : round(($availabilityResponded / $availability->count()) * 100, 1),
-            'activityCount' => $activities->count(),
-            'openFollowUps' => $activities->where('requires_follow_up', true)->count(),
-            'priorityCounts' => $priorityCounts,
-            'ambulanceMovementCounts' => $ambulanceMovementCounts,
-            'maxAmbulanceMovements' => max(1, (int) $ambulanceMovementCounts->max()),
-            'availabilityStatusCounts' => collect([
-                'responded' => $availabilityResponded,
-                'no_response' => $availability->count() - $availabilityResponded,
-            ]),
+            'reports' => $reports,
+            'reportFilters' => $reportFilters,
+            'approverTabs' => $approverTabs,
+            'activeReportTab' => $activeReportTab,
+            'generationPeriod' => ['period_start' => $periodStart, 'period_end' => $periodEnd],
         ]);
+    }
+
+    public function editReport(EmsReport $report)
+    {
+        $this->ensureReportIsMutableByPreparer($report);
+
+        return view('ems.reports.edit', compact('report'));
+    }
+
+    public function updateReport(Request $request, EmsReport $report): RedirectResponse
+    {
+        $this->ensureReportIsMutableByPreparer($report);
+        $data = $this->validateReportDefinition($request);
+        [$periodStart, $periodEnd, $periodLabel] = $this->reportPeriodDates($data);
+        [$snapshot, $summary, $recommendations] = $this->buildPrintableReport($data['type'], $periodStart, $periodEnd);
+        $snapshot['reporting_period_label'] = $periodLabel ?? 'Custom Dates';
+        $snapshot['reporting_period_cadence'] = $this->reportCadence($data['period_preset'], $periodStart, $periodEnd);
+
+        if ($report->status === 'submitted') {
+            Storage::disk('local')->delete(array_filter([$report->submitter_signature_path]));
+        }
+
+        $report->update([
+            'type' => $data['type'],
+            'period_start' => $periodStart,
+            'period_end' => $periodEnd,
+            'status' => 'draft',
+            'snapshot' => $snapshot,
+            'summary' => $summary,
+            'recommendations' => $recommendations,
+            'submitted_by' => null,
+            'submitted_at' => null,
+            'submitter_signature_method' => null,
+            'submitter_signature_path' => null,
+            'approved_by' => null,
+            'approved_by_name' => null,
+            'approved_by_email' => null,
+            'approved_at' => null,
+            'approver_signature_method' => null,
+            'approver_signature_path' => null,
+            'signed_report_path' => null,
+        ]);
+
+        return redirect()->route('ems.reports')->with([
+            'success' => 'Report updated and returned to Draft.',
+            'success_report_uuid' => $report->uuid,
+        ]);
+    }
+
+    public function destroyReport(EmsReport $report): RedirectResponse
+    {
+        $this->ensureReportIsMutableByPreparer($report);
+        Storage::disk('local')->deleteDirectory('ems-report-signatures/'.$report->uuid);
+        $report->delete();
+
+        return redirect()->route('ems.reports')->with('success', 'Report deleted successfully.');
     }
 
     public function exportOperationsReport(Request $request)
@@ -614,20 +620,322 @@ class EmsOperationsController extends Controller
 
     public function printReport(EmsReport $report)
     {
-        $report->load(['preparedBy','approvedBy']);
+        $report->load(['preparedBy','submittedBy','approvedBy']);
         return view('ems.report-print', compact('report'));
     }
 
-    public function approveReport(EmsReport $report): RedirectResponse
+    public function guestApproval(Request $request, EmsReport $report)
     {
-        abort_unless(in_array($report->status, ['draft','submitted'], true), 422, 'Only draft or submitted reports can be approved.');
-        $report->update(['status'=>'approved','approved_by'=>auth()->id(),'approved_at'=>now()]);
+        abort_unless(in_array($report->status, ['submitted', 'approved'], true), 404);
+        $report->load(['preparedBy','submittedBy','approvedBy']);
+        $approver = $this->reportApprover($request->query('approver'));
+
+        return view('ems.report-print', [
+            'report' => $report,
+            'guestApproval' => true,
+            'guestApproveUrl' => $report->status === 'submitted'
+                ? $this->temporaryReportUrl('ems.reports.guest-approve', $report, ['approver' => $approver['email']])
+                : null,
+        ]);
+    }
+
+    public function submitReport(Request $request, EmsReport $report): RedirectResponse
+    {
+        abort_unless($report->status === 'draft', 422, 'Only draft reports can be submitted.');
+        abort_unless((int) $report->prepared_by === (int) auth()->id(), 403, 'Only the person who prepared this report can sign and submit it.');
+
+        $signature = $this->storeReportSignature($request, $report, 'submitter');
+        $report->update([
+            'status' => 'submitted',
+            'submitted_by' => auth()->id(),
+            'submitted_at' => now(),
+            'submitter_signature_method' => $signature['method'],
+            'submitter_signature_path' => $signature['signature_path'],
+        ]);
+        $this->sendReportApprovalEmail($report->fresh(['preparedBy','submittedBy']));
+
+        return redirect()->route('ems.reports.print', $report)->with('success', 'Report signed and submitted for approval.');
+    }
+
+    public function approveReport(Request $request, EmsReport $report): RedirectResponse
+    {
+        abort_unless($report->status === 'submitted', 422, 'Only submitted reports can be approved.');
+
+        $signature = $this->storeReportSignature($request, $report, 'approver');
+        $report->update([
+            'status' => 'approved',
+            'approved_by' => auth()->id(),
+            'approved_by_name' => auth()->user()?->name,
+            'approved_by_email' => auth()->user()?->email,
+            'approved_at' => now(),
+            'approver_signature_method' => $signature['method'],
+            'approver_signature_path' => $signature['signature_path'],
+            'signed_report_path' => $signature['signed_report_path'],
+        ]);
         return back()->with('success','Report approved successfully.');
     }
 
-    public function exportReport(EmsReport $report)
+    public function guestApproveReport(Request $request, EmsReport $report): RedirectResponse
     {
-        return response()->streamDownload(function()use($report){$out=fopen('php://output','w');$snapshot=$report->snapshot??[];$rows=match($report->type){'mileage'=>$snapshot['readings']??$snapshot,'availability'=>$snapshot['checks']??$snapshot,default=>$snapshot['activities']??$snapshot};if($rows!==[]&&isset($rows[0])&&is_array($rows[0])){fputcsv($out,array_keys($rows[0]));foreach($rows as $row)fputcsv($out,array_map(fn($v)=>is_array($v)?json_encode($v):$v,$row));}fclose($out);},'EMS-'.$report->type.'-'.$report->period_end->format('Y-m-d').'.csv',['Content-Type'=>'text/csv']);
+        abort_unless($report->status === 'submitted', 422, 'Only submitted reports can be approved.');
+
+        $signature = $this->storeReportSignature($request, $report, 'approver');
+        $approver = $this->reportApprover($request->query('approver'));
+        $report->update([
+            'status' => 'approved',
+            'approved_by' => null,
+            'approved_by_name' => $approver['name'],
+            'approved_by_email' => $approver['email'],
+            'approved_at' => now(),
+            'approver_signature_method' => $signature['method'],
+            'approver_signature_path' => $signature['signature_path'],
+            'signed_report_path' => $signature['signed_report_path'],
+        ]);
+
+        return redirect($this->temporaryReportUrl('ems.reports.guest-approval', $report, ['approver' => $approver['email']]))
+            ->with('success', 'Report approved successfully.');
+    }
+
+    public function reportFile(EmsReport $report, string $file)
+    {
+        return $this->reportFileResponse($report, $file);
+    }
+
+    public function guestReportFile(EmsReport $report, string $file)
+    {
+        abort_unless(in_array($report->status, ['submitted', 'approved'], true), 404);
+
+        return $this->reportFileResponse($report, $file);
+    }
+
+    private function reportFileResponse(EmsReport $report, string $file)
+    {
+        $path = match ($file) {
+            'submitter-signature' => $report->submitter_signature_path,
+            'approver-signature' => $report->approver_signature_path,
+            'signed-report' => $report->signed_report_path,
+        };
+        abort_if(blank($path) || !Storage::disk('local')->exists($path), 404);
+
+        if ($file === 'signed-report') {
+            return Storage::disk('local')->download($path, 'EMS-signed-report-'.$report->uuid.'.pdf');
+        }
+
+        return Storage::disk('local')->response($this->normalizedSignaturePath($path));
+    }
+
+    private function temporaryReportUrl(string $route, EmsReport $report, array $parameters = []): string
+    {
+        return URL::temporarySignedRoute(
+            $route,
+            now()->addHours((int) config('ems.report_approval_link_hours', 72)),
+            ['report' => $report, ...$parameters],
+        );
+    }
+
+    private function storeReportSignature(Request $request, EmsReport $report, string $party): array
+    {
+        if ($request->hasFile('signed_report')) {
+            throw ValidationException::withMessages(['signed_report' => 'Upload a signature image or draw your signature instead.']);
+        }
+        $data = $request->validate([
+            'signature_data' => ['nullable','string','max:3000000'],
+            'signature_file' => ['nullable','file','mimes:png,jpg,jpeg','max:2048','dimensions:max_width=5000,max_height=5000'],
+            'signature_confirmation' => ['accepted'],
+        ], [
+            'signature_confirmation.accepted' => 'Confirm that this signature belongs to you and that you accept responsibility for this report.',
+            'signature_file.mimes' => 'Upload a PNG or JPG signature image.',
+        ]);
+
+        $signaturePath = null;
+        $directory = 'ems-report-signatures/'.$report->uuid;
+        $method = match (true) {
+            $request->hasFile('signature_file') => 'upload',
+            filled($data['signature_data'] ?? null) => 'drawn',
+            default => null,
+        };
+        if ($method === null) {
+            throw ValidationException::withMessages(['signature_data' => 'Draw your signature or upload a signature file before continuing.']);
+        }
+
+        if ($method === 'drawn') {
+            $signaturePath = $this->storeDrawnSignature((string) ($data['signature_data'] ?? ''), $directory, $party);
+        } elseif ($method === 'upload') {
+            $extension = $request->file('signature_file')->extension();
+            $signaturePath = $request->file('signature_file')->storeAs($directory, $party.'-'.Str::uuid().'.'.$extension, 'local');
+            if (!$signaturePath) {
+                throw ValidationException::withMessages(['signature_file' => 'The signature could not be saved. Please try again.']);
+            }
+        }
+
+        return [
+            'method' => $method,
+            'signature_path' => $signaturePath,
+            'signed_report_path' => null,
+        ];
+    }
+
+    private function normalizedSignaturePath(string $path): string
+    {
+        $disk = Storage::disk('local');
+        $normalizedPath = $path.'.normalized.png';
+        if ($disk->exists($normalizedPath) && $disk->lastModified($normalizedPath) >= $disk->lastModified($path)) {
+            return $normalizedPath;
+        }
+
+        $binary = $disk->get($path);
+        $dimensions = @getimagesizefromstring($binary);
+        if (!function_exists('imagecreatefromstring') || !$dimensions || $dimensions[0] > 5000 || $dimensions[1] > 5000) {
+            return $path;
+        }
+        $image = @imagecreatefromstring($binary);
+        if (!$image) {
+            return $path;
+        }
+
+        $width = imagesx($image);
+        $height = imagesy($image);
+        if ($width > 2000 || $height > 1200) {
+            $scale = min(2000 / $width, 1200 / $height);
+            $scaled = imagescale($image, max(1, (int) round($width * $scale)), max(1, (int) round($height * $scale)), IMG_BILINEAR_FIXED);
+            if ($scaled) {
+                imagedestroy($image);
+                $image = $scaled;
+                $width = imagesx($image);
+                $height = imagesy($image);
+            }
+        }
+        $left = $width;
+        $top = $height;
+        $right = -1;
+        $bottom = -1;
+        for ($y = 0; $y < $height; $y++) {
+            for ($x = 0; $x < $width; $x++) {
+                $pixel = imagecolorat($image, $x, $y);
+                $alpha = ($pixel >> 24) & 0x7f;
+                $red = ($pixel >> 16) & 0xff;
+                $green = ($pixel >> 8) & 0xff;
+                $blue = $pixel & 0xff;
+                if ($alpha < 120 && ($red < 245 || $green < 245 || $blue < 245)) {
+                    $left = min($left, $x);
+                    $top = min($top, $y);
+                    $right = max($right, $x);
+                    $bottom = max($bottom, $y);
+                }
+            }
+        }
+        if ($right < $left || $bottom < $top) {
+            imagedestroy($image);
+            return $path;
+        }
+
+        $padding = max(6, (int) round(max($right - $left + 1, $bottom - $top + 1) * 0.06));
+        $left = max(0, $left - $padding);
+        $top = max(0, $top - $padding);
+        $right = min($width - 1, $right + $padding);
+        $bottom = min($height - 1, $bottom + $padding);
+        $croppedWidth = $right - $left + 1;
+        $croppedHeight = $bottom - $top + 1;
+        $cropped = imagecreatetruecolor($croppedWidth, $croppedHeight);
+        imagealphablending($cropped, false);
+        imagesavealpha($cropped, true);
+        $transparent = imagecolorallocatealpha($cropped, 255, 255, 255, 127);
+        imagefill($cropped, 0, 0, $transparent);
+        imagecopy($cropped, $image, 0, 0, $left, $top, $croppedWidth, $croppedHeight);
+        ob_start();
+        imagepng($cropped, null, 6);
+        $normalized = ob_get_clean();
+        imagedestroy($cropped);
+        imagedestroy($image);
+        if ($normalized !== false) {
+            $disk->put($normalizedPath, $normalized);
+            return $normalizedPath;
+        }
+
+        return $path;
+    }
+
+    private function sendReportApprovalEmail(EmsReport $report): void
+    {
+        $approvers = $this->reportApprovers();
+        if ($approvers === []) {
+            Log::error('No valid EMS report approval email addresses are configured.');
+            return;
+        }
+
+        foreach ($approvers as $approver) {
+            try {
+                Mail::to($approver['email'])->send(new ReportReadyForApproval($report, $approver['name'], $approver['email']));
+            } catch (Throwable $exception) {
+                Log::error('EMS report approval email could not be sent.', [
+                    'report_uuid' => $report->uuid,
+                    'recipient' => $approver['email'],
+                    'reason' => $exception->getMessage(),
+                ]);
+            }
+        }
+    }
+
+    private function reportApprover(?string $email = null): array
+    {
+        $approvers = $this->reportApprovers();
+        abort_if($approvers === [], 500, 'No report approver is configured.');
+
+        if (filled($email)) {
+            $approver = collect($approvers)->first(fn (array $item): bool => strcasecmp($item['email'], $email) === 0);
+            abort_unless($approver, 403, 'This approval recipient is not configured.');
+            return $approver;
+        }
+
+        return $approvers[0];
+    }
+
+    private function reportApprovers(): array
+    {
+        $configured = (string) config('ems.report_approvers', '');
+        $approvers = [];
+
+        foreach (str_getcsv($configured) as $mailbox) {
+            $mailbox = trim($mailbox);
+            if ($mailbox === '') continue;
+
+            if (preg_match('/^(.+?)\s*<([^>]+)>$/', $mailbox, $matches)) {
+                $name = trim($matches[1], " \t\n\r\0\x0B\"");
+                $email = trim($matches[2]);
+            } else {
+                $email = $mailbox;
+                $name = strstr($email, '@', true) ?: 'EMS Approver';
+            }
+
+            if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                Log::warning('An EMS report approver entry has an invalid email address.', ['entry' => $mailbox]);
+                continue;
+            }
+
+            $approvers[strtolower($email)] = ['name' => $name ?: 'EMS Approver', 'email' => $email];
+        }
+
+        return array_values($approvers);
+    }
+
+    private function storeDrawnSignature(string $dataUrl, string $directory, string $party): string
+    {
+        if (!preg_match('/^data:image\/png;base64,([A-Za-z0-9+\/=]+)$/', $dataUrl, $matches)) {
+            throw ValidationException::withMessages(['signature_data' => 'Draw your signature in the signature box before continuing.']);
+        }
+
+        $binary = base64_decode($matches[1], true);
+        $image = $binary === false ? false : @getimagesizefromstring($binary);
+        if ($binary === false || strlen($binary) > 2 * 1024 * 1024 || $image === false || ($image['mime'] ?? null) !== 'image/png') {
+            throw ValidationException::withMessages(['signature_data' => 'The drawn signature is invalid or too large. Please draw it again.']);
+        }
+
+        $path = $directory.'/'.$party.'-'.Str::uuid().'.png';
+        if (!Storage::disk('local')->put($path, $binary)) {
+            throw ValidationException::withMessages(['signature_data' => 'The signature could not be saved. Please try again.']);
+        }
+
+        return $path;
     }
 
     public function audit()
@@ -676,7 +984,7 @@ class EmsOperationsController extends Controller
             'make' => ['nullable', 'string', 'max:80', "regex:/^[\\pL\\pN .&()\\/'-]+$/u"],
             'model' => ['nullable', 'string', 'max:80', "regex:/^[\\pL\\pN .&()\\/'-]+$/u"],
             'year' => ['nullable', 'integer', 'min:1980', 'max:'.now()->year],
-            'base_location' => ['required', Rule::in(config('ems.movement_locations'))],
+            'base_location' => ['required', Rule::in(Location::activeNames()->when($ambulance, fn ($locations) => $locations->push($ambulance->base_location))->filter()->unique()->all())],
             'odometer_km' => ['required', 'integer', 'min:0', 'max:9999999'],
             'roadworthy_expires_at' => ['nullable', 'date_format:Y-m-d', $validExpiry('roadworthy_expires_at')],
             'insurance_expires_at' => ['nullable', 'date_format:Y-m-d', $validExpiry('insurance_expires_at')],
@@ -692,16 +1000,17 @@ class EmsOperationsController extends Controller
         ]);
     }
 
-    private function validateMovement(Request $request): array
+    private function validateMovement(Request $request, ?Dispatch $dispatch = null): array
     {
+        $locations = Location::activeNames()->all();
         $data = $request->validate([
             'ambulance_id'=>['required','exists:ambulances,id'],
             'priority'=>['required',Rule::in(array_keys(config('ems.movement_priorities')))],
             'requested_at'=>['required','date','before_or_equal:now'],
             'status'=>['required',Rule::in(['requested','completed'])],
-            'origin'=>['required',Rule::in([...config('ems.movement_locations'),'Other'])],
+            'origin'=>['required',Rule::in([...$locations,'Other'])],
             'origin_other'=>['nullable','required_if:origin,Other','string','max:160'],
-            'destination'=>['required',Rule::in([...config('ems.movement_locations'),'Other'])],
+            'destination'=>['required',Rule::in([...$locations,'Other'])],
             'destination_other'=>['nullable','required_if:destination,Other','string','max:160'],
             'purpose'=>['required',Rule::in(config('ems.case_categories'))],
             'notes'=>['nullable','string','max:2000'],
@@ -767,6 +1076,83 @@ class EmsOperationsController extends Controller
             'period_end'=>$periodEnd,
             'period_label'=>$periodLabel??'Custom Dates',
         ]);
+    }
+
+    private function analyticsData(Request $request): array
+    {
+        $filters = $this->reportFilters($request);
+        $records = $this->filteredMovements($filters)->oldest('requested_at')->get();
+        $completed = $records->where('status', 'completed');
+        $ambulances = Ambulance::orderBy('fleet_number')->get();
+        $statusCounts = collect(['requested', 'completed'])
+            ->mapWithKeys(fn ($status) => [$status => $records->where('status', $status)->count()]);
+        $dailyCounts = $records->groupBy(fn (Dispatch $movement) => $movement->requested_at->format('Y-m-d'))
+            ->map->count()
+            ->sortKeys();
+        $availability = AvailabilityCheck::whereDate('check_date', '>=', $filters['period_start'])
+            ->whereDate('check_date', '<=', $filters['period_end'])
+            ->get();
+        $activities = WeeklyActivity::whereDate('activity_date', '>=', $filters['period_start'])
+            ->whereDate('activity_date', '<=', $filters['period_end'])
+            ->get();
+        $totalMovements = $records->count();
+        $ambulancesUsed = $records->pluck('ambulance_id')->filter()->unique()->count();
+        $emergencyMovements = $records->where('priority', 'emergency')->count();
+        $availabilityResponded = $availability->where('responded', true)->count();
+        $priorityCounts = collect(array_keys(config('ems.movement_priorities')))
+            ->mapWithKeys(fn ($priority) => [$priority => $records->where('priority', $priority)->count()]);
+        $movementLoadAmbulances = filled($filters['ambulance_id'] ?? null)
+            ? $ambulances->where('id', (int) $filters['ambulance_id'])
+            : $ambulances;
+        $ambulanceMovementCounts = $movementLoadAmbulances
+            ->mapWithKeys(fn (Ambulance $ambulance) => [$ambulance->fleet_number => $records->where('ambulance_id', $ambulance->id)->count()]);
+
+        return [
+            'filters' => $filters,
+            'ambulances' => $ambulances,
+            'totalMovements' => $totalMovements,
+            'completedMovements' => $completed->count(),
+            'activeMovements' => $records->whereIn('status', ['requested', 'dispatched', 'arrived'])->count(),
+            'emergencyMovements' => $emergencyMovements,
+            'emergencyRate' => $totalMovements ? round(($emergencyMovements / $totalMovements) * 100, 1) : 0,
+            'ambulancesUsed' => $ambulancesUsed,
+            'totalAmbulances' => $ambulances->count(),
+            'fleetUtilizationRate' => $ambulances->isEmpty() ? 0 : round(($ambulancesUsed / $ambulances->count()) * 100, 1),
+            'completionRate' => $records->isEmpty() ? 0 : round(($completed->count() / $records->count()) * 100, 1),
+            'statusCounts' => $statusCounts,
+            'dailyCounts' => $dailyCounts,
+            'maxDaily' => max(1, (int) $dailyCounts->max()),
+            'availabilityChecks' => $availability->count(),
+            'availabilityResponded' => $availabilityResponded,
+            'availabilityRate' => $availability->isEmpty() ? null : round(($availabilityResponded / $availability->count()) * 100, 1),
+            'activityCount' => $activities->count(),
+            'openFollowUps' => $activities->where('requires_follow_up', true)->count(),
+            'priorityCounts' => $priorityCounts,
+            'ambulanceMovementCounts' => $ambulanceMovementCounts,
+            'maxAmbulanceMovements' => max(1, (int) $ambulanceMovementCounts->max()),
+            'availabilityStatusCounts' => collect([
+                'responded' => $availabilityResponded,
+                'no_response' => $availability->count() - $availabilityResponded,
+            ]),
+        ];
+    }
+
+    private function validateReportDefinition(Request $request): array
+    {
+        $request->merge(['period_preset' => $request->input('period_preset', 'custom')]);
+
+        return $request->validate([
+            'type' => ['required', Rule::in(['mileage','weekly_activity','availability'])],
+            'period_preset' => ['required', Rule::in(['today','yesterday','this_week','last_week','this_month','last_month','this_quarter','last_quarter','last_six_months','this_year','last_year','custom'])],
+            'period_start' => ['nullable','required_if:period_preset,custom','date'],
+            'period_end' => ['nullable','required_if:period_preset,custom','date','after_or_equal:period_start'],
+        ]);
+    }
+
+    private function ensureReportIsMutableByPreparer(EmsReport $report): void
+    {
+        abort_unless(in_array($report->status, ['draft','submitted'], true), 422, 'Approved reports cannot be edited or deleted.');
+        abort_unless((int) $report->prepared_by === (int) auth()->id(), 403, 'Only the person who prepared this report can edit or delete it.');
     }
 
     private function filteredMovements(array $filters)
@@ -913,7 +1299,7 @@ class EmsOperationsController extends Controller
             $negativeUnits->isEmpty() ? 'No negative responses were recorded.' : 'Negative responses were recorded for: '.$negativeUnits->join(', ').'.',
         ];
         $recommendations = [
-            'Continue scheduled morning and afternoon communication checks.',
+            'Continue scheduled morning, afternoon, and evening communication checks.',
             $negativeUnits->isEmpty() ? 'Maintain radio equipment and response discipline across all units.' : 'Investigate radio, staffing, or equipment issues affecting: '.$negativeUnits->join(', ').'.',
             'Use repeated negative-response trends to prioritise corrective action and equipment replacement.',
         ];
@@ -930,22 +1316,30 @@ class EmsOperationsController extends Controller
     private function validateAvailabilitySession(Request $request,bool $editing=false): array
     {
         $allowedUnits = Ambulance::pluck('fleet_number')->merge(AvailabilityUnit::where('is_active',true)->pluck('name'))->unique()->values()->all();
+        $allowedResponseLocations = Location::activeNames();
+        if ($editing) {
+            $checkIds = collect($request->input('checks', []))->pluck('id')->filter()->all();
+            $allowedResponseLocations = $allowedResponseLocations
+                ->merge(AvailabilityCheck::whereIn('id', $checkIds)->pluck('response_location'));
+        }
+        $allowedResponseLocations = $allowedResponseLocations->filter()->unique()->values()->all();
 
         return $request->validate([
             'check_date'=>'required|date|before_or_equal:today',
-            'period'=>'required|in:morning,afternoon',
+            'period'=>'required|in:morning,afternoon,evening',
             'checked_at'=>'required|date_format:H:i',
             'checks'=>'required|array|min:1',
             'checks.*.id'=>$editing?'required|integer|exists:availability_checks,id':'prohibited',
             'checks.*.unit_name'=>$editing?'prohibited':['required','string','max:120','distinct',Rule::in($allowedUnits)],
             'checks.*.responded'=>'required|boolean',
-            'checks.*.response_location'=>'nullable|string|max:160',
+            'checks.*.response_location'=>['nullable','string','max:160',Rule::in($allowedResponseLocations)],
             'checks.*.observation'=>'nullable|string|max:1000',
         ], [
             'checks.required' => 'Select at least one unit for this check session.',
             'checks.min' => 'Select at least one unit for this check session.',
             'checks.*.unit_name.in' => 'Select a valid configured unit.',
             'checks.*.unit_name.distinct' => 'Each unit can only be included once per check session.',
+            'checks.*.response_location.in' => 'Select a valid active response location.',
         ]);
     }
 

@@ -193,7 +193,7 @@ class SsoLoginController extends Controller
         }
 
         $appPath = rtrim(
-            $appParts['path'] ?? '/ems',
+            $appParts['path'] ?? '',
             '/'
         );
 
@@ -208,16 +208,16 @@ class SsoLoginController extends Controller
          * /ems/operations/mileage
          */
         if (
+            $appPath !== '' &&
             $path !== $appPath &&
             ! str_starts_with($path, $appPath . '/')
         ) {
             return $appUrl . '/dashboard';
         }
 
-        $relativePath = substr(
-            $path,
-            strlen($appPath)
-        );
+        $relativePath = $appPath === ''
+            ? $path
+            : substr($path, strlen($appPath));
 
         $query = isset($urlParts['query'])
             ? '?' . $urlParts['query']

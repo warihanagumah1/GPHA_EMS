@@ -1,31 +1,14 @@
 <?php
 
 return [
+    'report_approver_email' => env('EMS_REPORT_APPROVER_EMAIL', 'emasiedu@ghanaports.gov.gov.gh'),
+    'report_approvers' => env('EMS_REPORT_APPROVERS', 'Dr. Emile <'.env('EMS_REPORT_APPROVER_EMAIL', 'emasiedu@ghanaports.gov.gov.gh').'>'),
+    'report_approval_link_hours' => (int) env('EMS_REPORT_APPROVAL_LINK_HOURS', 72),
+
     'movement_priorities' => [
         'routine' => 'Routine',
         'non_emergency' => 'Non-emergency',
         'emergency' => 'Emergency',
-    ],
-
-    'movement_locations' => [
-        'Main Clinic',
-        'Clinic B',
-        'Golden Jubilee Terminal',
-        'Transit Terminal',
-        'KUT Terminal',
-        'Port Control',
-        'Port Security',
-        'Port Fire Station',
-        'Transport Pool',
-        'Berth',
-        'Anchorage',
-        'Fishing Harbour Clinic',
-        'GJT',
-        'Tema General Hospital',
-        'International Maritime Hospital (IMaH)',
-        'Tema Polyclinic',
-        '37 Military Hospital',
-        'Korle Bu Teaching Hospital',
     ],
 
     'case_categories' => [

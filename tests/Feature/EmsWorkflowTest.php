@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Mail\ReportReadyForApproval;
 use App\Models\Ambulance;
 use App\Models\AvailabilityCheck;
 use App\Models\AvailabilityUnit;
@@ -9,10 +10,15 @@ use App\Models\Dispatch;
 use App\Models\EmsReport;
 use App\Models\EmsAuditLog;
 use App\Models\MileageReading;
+use App\Models\Location;
 use App\Models\User;
 use App\Models\WeeklyActivity;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Blade;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -60,7 +66,10 @@ class EmsWorkflowTest extends TestCase
     public function test_ambulance_registration_year_location_and_expiry_are_strictly_validated(): void
     {
         $user=User::factory()->create();
-        $registrationField = Blade::render('<x-ems.ambulance-form action="/ambulances" />');
+        $registrationField = Blade::render(
+            '<x-ems.ambulance-form :locations="$locations" action="/ambulances" />',
+            ['locations' => collect(['Main Clinic'])],
+        );
         $this->assertStringContainsString('registrationValid()', $registrationField);
         $this->assertStringContainsString('Valid registration format.', $registrationField);
         $this->assertStringContainsString('Enter a valid registration number such as GV 1234-26.', $registrationField);
@@ -94,6 +103,107 @@ class EmsWorkflowTest extends TestCase
             'id' => $ambulance->id,
             'make' => 'Mercedes-Benz',
         ]);
+    }
+
+    public function test_locations_are_managed_in_settings_without_changing_historical_records(): void
+    {
+        $user = User::factory()->create();
+        $session = ['sso.permissions' => ['emssettings' => ['manage']]];
+
+        $this->assertDatabaseHas('locations', ['name' => 'Main Clinic', 'is_active' => true]);
+
+        $this->actingAs($user)->withSession($session)
+            ->post(route('ems.settings.locations.store'), ['location_name' => 'Community Response Point'])
+            ->assertRedirect(route('ems.settings').'#locations');
+
+        $location = Location::where('name', 'Community Response Point')->firstOrFail();
+        $ambulance = $this->ambulance(['base_location' => $location->name]);
+
+        $this->actingAs($user)->withSession($session)
+            ->patch(route('ems.settings.locations.status', $location), ['is_active' => 0])
+            ->assertRedirect(route('ems.settings').'#locations');
+
+        $this->actingAs($user)->post(route('ems.ambulances.store'), [
+            'fleet_number' => 'AMBU 2',
+            'registration_number' => 'GV 200-26',
+            'base_location' => $location->name,
+            'odometer_km' => 0,
+        ])->assertSessionHasErrors('base_location');
+
+        $this->actingAs($user)->put(route('ems.ambulances.update', $ambulance), [
+            'fleet_number' => $ambulance->fleet_number,
+            'registration_number' => $ambulance->registration_number,
+            'base_location' => $ambulance->base_location,
+            'odometer_km' => $ambulance->odometer_km,
+        ])->assertRedirect(route('ems.ambulances'));
+
+        $this->actingAs($user)->withSession($session)
+            ->put(route('ems.settings.locations.update', $location), ['location_name' => 'Community Response Centre'])
+            ->assertRedirect(route('ems.settings').'#locations');
+
+        $this->assertSame('Community Response Point', $ambulance->fresh()->base_location);
+        $this->assertDatabaseHas('ems_audit_logs', ['action' => 'location.updated', 'user_id' => $user->id]);
+
+        $this->actingAs($user)->withSession($session)
+            ->post(route('ems.settings.locations.store'), ['location_name' => 'Community Response Centre'])
+            ->assertRedirect(route('ems.settings').'#locations');
+        $this->assertTrue($location->fresh()->is_active);
+    }
+
+    public function test_existing_operational_locations_are_imported_without_changing_historical_records(): void
+    {
+        $user = User::factory()->create();
+        $ambulance = $this->ambulance(['base_location' => 'Legacy Ambulance Bay']);
+        $dispatch = Dispatch::create([
+            'ambulance_id' => $ambulance->id,
+            'reference' => 'EMS-LEGACY-LOCATION',
+            'priority' => 'routine',
+            'requested_at' => now(),
+            'status' => 'requested',
+            'origin' => 'Old Port Gate',
+            'destination' => 'Legacy Treatment Centre',
+            'purpose' => 'Patient transfer',
+            'created_by' => $user->id,
+        ]);
+        $check = AvailabilityCheck::create([
+            'session_uuid' => (string) Str::uuid(),
+            'check_date' => today(),
+            'period' => 'morning',
+            'checked_at' => '08:00',
+            'unit_name' => 'Main Clinic',
+            'responded' => true,
+            'response_location' => 'Former Response Point',
+            'recorded_by' => $user->id,
+        ]);
+
+        $migration = require database_path('migrations/2026_08_19_150000_import_existing_operational_locations.php');
+        $migration->up();
+
+        foreach (['Legacy Ambulance Bay', 'Old Port Gate', 'Legacy Treatment Centre', 'Former Response Point'] as $name) {
+            $this->assertDatabaseHas('locations', ['name' => $name, 'is_active' => true]);
+        }
+        $this->assertSame('Old Port Gate', $dispatch->fresh()->origin);
+        $this->assertSame('Legacy Treatment Centre', $dispatch->fresh()->destination);
+        $this->assertSame('Former Response Point', $check->fresh()->response_location);
+    }
+
+    public function test_settings_requires_the_dedicated_manage_permission(): void
+    {
+        $user = User::factory()->create(['sso_user_id' => (string) Str::uuid()]);
+        $syncedAt = now()->timestamp;
+
+        $this->actingAs($user)->withSession([
+            'sso.permissions' => ['ambulancefleet' => ['view']],
+            'sso.permissions_synced_at' => $syncedAt,
+        ])->get(route('ems.settings'))->assertForbidden();
+
+        $this->actingAs($user)->withSession([
+            'sso.permissions' => ['emssettings' => ['manage']],
+            'sso.permissions_synced_at' => $syncedAt,
+        ])->get(route('ems.settings'))
+            ->assertOk()
+            ->assertSee('Locations')
+            ->assertSee('Departments / Units');
     }
 
     public function test_initial_ambulance_odometer_can_be_reduced_until_a_mileage_reading_exists(): void
@@ -367,9 +477,14 @@ class EmsWorkflowTest extends TestCase
         ]);
 
         $filters = ['period_start' => today()->toDateString(), 'period_end' => today()->toDateString()];
-        $this->actingAs($user)->get(route('ems.reports', $filters))
+        $this->actingAs($user)->get(route('dashboard', $filters))
             ->assertOk()
-            ->assertSee('Operational Reports')
+            ->assertDontSee('Emergency Operations Centre')
+            ->assertDontSee('Operational Overview')
+            ->assertDontSee('Period-based movement, fleet, readiness, and activity performance.')
+            ->assertSee('Add Movement')
+            ->assertSee('Manage Reports')
+            ->assertDontSee('Export CSV')
             ->assertSee('Management Analytics')
             ->assertSee('Download Snapshot')
             ->assertSee('data-download-analytics-snapshot', false)
@@ -384,7 +499,16 @@ class EmsWorkflowTest extends TestCase
             ->assertDontSee('Recorded Distance')
             ->assertDontSee('Fleet Performance')
             ->assertDontSee('Movement Details')
-            ->assertDontSee('Generated Printable Reports');
+            ->assertDontSee('Recent Movements')
+            ->assertDontSee('Fleet Readiness');
+
+        $this->actingAs($user)->get(route('ems.reports'))
+            ->assertOk()
+            ->assertSee('Formal EMS Reporting')
+            ->assertSee('Generate Report')
+            ->assertSee('All Reports')
+            ->assertDontSee('Management Analytics')
+            ->assertDontSee('Download Snapshot');
 
         $export=$this->actingAs($user)->get(route('ems.reports.operations.export', $filters))->assertDownload();
         $this->assertStringNotContainsString('Distance (km)',$export->streamedContent());
@@ -404,10 +528,10 @@ class EmsWorkflowTest extends TestCase
             WeeklyActivity::create(['activity_date'=>'2026-07-17','category'=>'training','title'=>'July training','description'=>'July training']);
             WeeklyActivity::create(['activity_date'=>'2026-08-17','category'=>'training','title'=>'August training','description'=>'August training']);
 
-            $this->actingAs($user)->get(route('ems.reports'))->assertOk()
+            $this->actingAs($user)->get(route('dashboard'))->assertOk()
                 ->assertViewHas('filters',fn($filters)=>$filters['period_preset']==='this_week'&&$filters['period_start']==='2026-08-16'&&$filters['period_end']==='2026-08-19');
 
-            $this->actingAs($user)->get(route('ems.reports',['period_preset'=>'last_month']))
+            $this->actingAs($user)->get(route('dashboard',['period_preset'=>'last_month']))
                 ->assertOk()
                 ->assertViewHas('filters',fn($filters)=>$filters['period_start']==='2026-07-01'&&$filters['period_end']==='2026-07-31'&&$filters['period_label']==='Last Month')
                 ->assertViewHas('totalMovements',1)
@@ -427,6 +551,46 @@ class EmsWorkflowTest extends TestCase
         }finally{
             \Carbon\Carbon::setTestNow();
         }
+    }
+
+    public function test_dashboard_fleet_movement_load_only_lists_the_selected_ambulance(): void
+    {
+        $user = User::factory()->create();
+        $first = $this->ambulance();
+        $second = $this->ambulance([
+            'fleet_number' => 'AMBU 2',
+            'registration_number' => 'GV 200-26',
+        ]);
+        Dispatch::create([
+            'reference' => 'EMS-FIRST-ONLY',
+            'ambulance_id' => $first->id,
+            'origin' => 'Main Clinic',
+            'destination' => 'Clinic B',
+            'purpose' => 'Patient transfer',
+            'priority' => 'routine',
+            'status' => 'completed',
+            'requested_at' => now(),
+            'completed_at' => now(),
+        ]);
+
+        $this->actingAs($user)->get(route('dashboard', [
+            'period_start' => today()->toDateString(),
+            'period_end' => today()->toDateString(),
+            'ambulance_id' => $second->id,
+        ]))
+            ->assertOk()
+            ->assertViewHas('ambulanceMovementCounts', fn ($counts) => $counts->all() === ['AMBU 2' => 0])
+            ->assertSee('Movement volume handled by the selected ambulance.')
+            ->assertDontSee('No fleet movement load for this period.');
+
+        $this->actingAs($user)->get(route('dashboard', [
+            'period_start' => today()->toDateString(),
+            'period_end' => today()->toDateString(),
+        ]))
+            ->assertOk()
+            ->assertViewHas('ambulanceMovementCounts', fn ($counts) => $counts->all() === ['AMBU 1' => 1, 'AMBU 2' => 0])
+            ->assertSee('Movement volume handled by each ambulance.')
+            ->assertDontSee('Movement volume handled by the selected ambulance.');
     }
 
     public function test_movement_list_can_be_filtered_by_operational_fields(): void
@@ -557,9 +721,15 @@ class EmsWorkflowTest extends TestCase
             ->assertSee('Select only the units included in this check session')
             ->assertSee('Select All Units')
             ->assertSee('aria-label="Include Main Clinic"', false)
-            ->assertSee('min="00:00"', false)
-            ->assertSee('max="23:59"', false)
-            ->assertDontSee('24-hour');
+            ->assertSee('type="text" name="checked_at"', false)
+            ->assertSee('placeholder="HH:MM"', false)
+            ->assertSee('pattern="(?:[01][0-9]|2[0-3]):[0-5][0-9]"', false)
+            ->assertSee('data-time-picker', false)
+            ->assertSee('aria-label="Open 24-hour clock selector"', false)
+            ->assertSee('Hour in 24-hour format')
+            ->assertSee('Set Time')
+            ->assertSee('24-hour format (HH:MM)')
+            ->assertDontSee('type="time" name="checked_at"', false);
 
         $this->actingAs($user)->post(route('ems.availability.store'), [
             'check_date' => today()->toDateString(),
@@ -574,15 +744,63 @@ class EmsWorkflowTest extends TestCase
             'unit_name' => 'Main Clinic',
             'checked_at' => '23:59',
         ]);
+
+        $this->actingAs($user)->post(route('ems.availability.store'), [
+            'check_date' => today()->toDateString(),
+            'period' => 'afternoon',
+            'checked_at' => '02:48 PM',
+            'checks' => [
+                ['unit_name' => 'Main Clinic', 'responded' => '1'],
+            ],
+        ])->assertSessionHasErrors('checked_at');
     }
 
-    public function test_availability_units_are_managed_without_changing_previous_checks_or_reports(): void
+    public function test_evening_availability_sessions_can_be_created_edited_and_filtered(): void
+    {
+        $user = User::factory()->create();
+
+        $this->actingAs($user)->get(route('ems.availability', ['new' => 1]))
+            ->assertOk()
+            ->assertSee('value="evening"', false)
+            ->assertSee('Evening');
+
+        $this->actingAs($user)->post(route('ems.availability.store'), [
+            'check_date' => today()->toDateString(),
+            'period' => 'evening',
+            'checked_at' => '19:30',
+            'checks' => [
+                ['unit_name' => 'Main Clinic', 'responded' => '1', 'response_location' => 'Main Clinic'],
+            ],
+        ])->assertRedirect();
+
+        $check = AvailabilityCheck::where('period', 'evening')->firstOrFail();
+
+        $this->actingAs($user)->get(route('ems.availability', ['period' => 'evening']))
+            ->assertOk()
+            ->assertSee('Evening');
+
+        $this->actingAs($user)->get(route('ems.availability.sessions.edit', $check->session_uuid))
+            ->assertOk()
+            ->assertSee('value="evening"', false)
+            ->assertSee('type="text" name="checked_at" value="19:30"', false)
+            ->assertSee('aria-label="Open 24-hour clock selector"', false)
+            ->assertSee('24-hour format (HH:MM)');
+
+        $this->assertDatabaseHas('availability_checks', [
+            'id' => $check->id,
+            'period' => 'evening',
+            'checked_at' => '19:30',
+        ]);
+    }
+
+    public function test_availability_units_are_managed_in_settings_without_changing_previous_checks_or_reports(): void
     {
         $user = User::factory()->create();
         $session = [
             'sso.permissions' => [
                 'readinessandactivities' => ['view', 'manage'],
                 'emsreports' => ['view', 'manage'],
+                'emssettings' => ['manage'],
             ],
         ];
 
@@ -591,19 +809,19 @@ class EmsWorkflowTest extends TestCase
             'is_active' => true,
         ]);
 
+        $this->actingAs($user)->withSession($session)->get(route('ems.settings'))
+            ->assertOk()
+            ->assertSee('Departments / Units')
+            ->assertSee('Fishing Harbour Clinic');
+
         $this->actingAs($user)->withSession($session)->get(route('ems.availability', ['new' => 1]))
             ->assertOk()
-            ->assertSee('Availability Check Units')
-            ->assertSee('x-show="!unitPanelOpen"', false)
-            ->assertSee('@click="unitPanelOpen=true"', false)
-            ->assertSee('@click="unitPanelOpen=false"', false)
-            ->assertSee('>Close</button>', false)
-            ->assertSee('Fishing Harbour Clinic')
+            ->assertDontSee('Manage Units')
             ->assertSee('aria-label="Include Fishing Harbour Clinic"', false);
 
-        $this->actingAs($user)->withSession($session)->post(route('ems.availability.units.store'), [
-            'name' => 'Harbour Master Office',
-        ])->assertRedirect(route('ems.availability'));
+        $this->actingAs($user)->withSession($session)->post(route('ems.settings.units.store'), [
+            'unit_name' => 'Harbour Master Office',
+        ])->assertRedirect(route('ems.settings').'#units');
 
         $unit = AvailabilityUnit::where('name', 'Harbour Master Office')->firstOrFail();
         $this->actingAs($user)->withSession($session)->post(route('ems.availability.store'), [
@@ -622,8 +840,9 @@ class EmsWorkflowTest extends TestCase
         $report = EmsReport::where('type', 'availability')->latest('id')->firstOrFail();
         $this->assertSame('Harbour Master Office', $report->snapshot['checks'][0]['unit']);
 
-        $this->actingAs($user)->withSession($session)->delete(route('ems.availability.units.destroy', $unit))
-            ->assertRedirect(route('ems.availability'));
+        $this->actingAs($user)->withSession($session)->patch(route('ems.settings.units.status', $unit), [
+            'is_active' => 0,
+        ])->assertRedirect(route('ems.settings').'#units');
 
         $this->assertDatabaseHas('availability_units', [
             'id' => $unit->id,
@@ -761,15 +980,473 @@ class EmsWorkflowTest extends TestCase
                 ->assertSee('Summary of Findings')
                 ->assertSee('Recommendations')
                 ->assertSee('Print / Save PDF')
-                ->assertSee('SAEMT')
+                ->assertSeeInOrder(['EMS Report Officer', 'EMS Officer', 'Prepared:'])
+                ->assertSee('Sign and Submit Report')
                 ->assertSee('.table-wrap table{border:1px solid #7e95b4}',false)
                 ->assertSee('class="print-table-footer"',false)
                 ->assertDontSee('Report ID:')
-                ->assertDontSee('Awaiting approval')
-                ->assertDontSee('Draft');
+                ->assertSee('Awaiting approval')
+                ->assertSee('Draft');
             if($type==='weekly_activity')$printResponse->assertDontSee('Category')->assertDontSee('class="activity-category"',false);
             if($type==='availability')$printResponse->assertSee('Unit Responses')->assertSee('Main Clinic');
         }
+    }
+
+    public function test_reports_require_submitter_and_approver_signatures_and_keep_a_complete_workflow_record(): void
+    {
+        Storage::fake('local');
+        Mail::fake();
+        config([
+            'ems.report_approvers' => 'Dr. Emile <emasiedu@ghanaports.gov.gov.gh>, Dr. Ama Mensah <ama.mensah@ghanaports.gov.gh>',
+        ]);
+        $submitter = User::factory()->create(['name' => 'Warihana Gumah', 'job_title' => 'SAEMT']);
+        $approver = User::factory()->create(['name' => 'EMS Director', 'job_title' => 'Director, Medical Services']);
+        $signature = 'data:image/png;base64,'.base64_encode(base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='));
+
+        $this->actingAs($submitter)->post(route('ems.reports.store'), [
+            'type' => 'availability',
+            'period_preset' => 'today',
+        ])->assertRedirect();
+        $report = EmsReport::latest('id')->firstOrFail();
+
+        $this->actingAs($submitter)->get(route('ems.reports.print', $report))
+            ->assertOk()
+            ->assertDontSee('Signature method')
+            ->assertSee('Draw your signature')
+            ->assertSee('Upload a signature image');
+
+        $this->actingAs($submitter)->get(route('ems.reports'))
+            ->assertOk()
+            ->assertSee('All Reports')
+            ->assertSee('Report Status')
+            ->assertSee('Awaiting Approval')
+            ->assertSee('Review & Sign')
+            ->assertSee('Print / Download PDF')
+            ->assertSee('href="'.route('ems.reports.print', ['report' => $report, 'print' => 1]).'"', false)
+            ->assertSeeInOrder(['SAEMT', 'Warihana Gumah']);
+
+        $this->actingAs($submitter)->get(route('ems.reports.print', ['report' => $report, 'print' => 1]))
+            ->assertOk()
+            ->assertSee('data-auto-print', false);
+
+        $this->actingAs($submitter)->from(route('ems.reports.print', $report))->post(route('ems.reports.submit', $report), [
+            'signature_confirmation' => '1',
+        ])->assertSessionHasErrors('signature_data');
+
+        $this->actingAs($submitter)->post(route('ems.reports.submit', $report), [
+            'signature_data' => $signature,
+            'signature_confirmation' => '1',
+        ])->assertRedirect(route('ems.reports.print', $report));
+
+        $report->refresh();
+        $this->assertSame('submitted', $report->status);
+        $this->assertSame($submitter->id, $report->submitted_by);
+        $this->assertNotNull($report->submitted_at);
+        Storage::disk('local')->assertExists($report->submitter_signature_path);
+        Mail::assertSent(ReportReadyForApproval::class, function (ReportReadyForApproval $mail) use ($report, $submitter) {
+            $html = $mail->render();
+
+            return $mail->hasTo('emasiedu@ghanaports.gov.gov.gh')
+                && $mail->report->is($report)
+                && str_contains($mail->approvalUrl, '/report-approval/'.$report->uuid)
+                && URL::hasValidSignature(\Illuminate\Http\Request::create($mail->approvalUrl))
+                && str_contains($html, 'EMS Report Ready for Approval')
+                && str_contains($html, 'Dear Dr. Emile,')
+                && str_contains($html, 'Review &amp; Sign Report')
+                && str_contains($html, 'No login or EMS permission is required')
+                && str_contains($html, 'must be reviewed and approved within')
+                && str_contains($html, '<strong>72 hours</strong>')
+                && str_contains($html, 'Regards,')
+                && str_contains($html, e($submitter->name))
+                && str_contains($html, 'background:#092f6d')
+                && str_contains($html, 'background:#d51f26')
+                && str_contains($html, 'background:#00579b');
+        });
+        Mail::assertSent(ReportReadyForApproval::class, 2);
+        Mail::assertSent(ReportReadyForApproval::class, fn (ReportReadyForApproval $mail) => $mail->hasTo('ama.mensah@ghanaports.gov.gh') && str_contains($mail->render(), 'Dear Dr. Ama Mensah,'));
+
+        $uploadedSignature = UploadedFile::fake()->createWithContent('director-signature.png', base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='));
+        $this->actingAs($approver)->patch(route('ems.reports.approve', $report), [
+            'signature_file' => $uploadedSignature,
+            'signature_confirmation' => '1',
+        ])->assertRedirect();
+
+        $report->refresh();
+        $this->assertSame('approved', $report->status);
+        $this->assertSame($approver->id, $report->approved_by);
+        $this->assertSame('upload', $report->approver_signature_method);
+        $this->assertNotNull($report->approved_at);
+        Storage::disk('local')->assertExists($report->approver_signature_path);
+
+        $this->actingAs($approver)->get(route('ems.reports.print', $report))
+            ->assertOk()
+            ->assertSeeInOrder(['Warihana Gumah', 'SAEMT'])
+            ->assertSeeInOrder(['EMS Director', 'Director, Medical Services'])
+            ->assertSee('Approved')
+            ->assertDontSee('Approve Report');
+        $this->actingAs($approver)->get(route('ems.reports.file', [$report, 'approver-signature']))->assertOk();
+    }
+
+    public function test_a_temporary_shared_link_allows_guest_review_signing_and_private_file_access(): void
+    {
+        Storage::fake('local');
+        config([
+            'ems.report_approvers' => 'Dr. Emile <emasiedu@ghanaports.gov.gov.gh>',
+            'ems.report_approval_link_hours' => 48,
+        ]);
+        $submitter = User::factory()->create(['name' => 'Warihana Gumah', 'job_title' => 'SAEMT']);
+        $signaturePath = 'ems-report-signatures/shared/submitter.png';
+        Storage::disk('local')->put($signaturePath, 'signature-image');
+        $report = EmsReport::create([
+            'type' => 'availability',
+            'period_start' => today(),
+            'period_end' => today(),
+            'status' => 'submitted',
+            'snapshot' => [],
+            'prepared_by' => $submitter->id,
+            'submitted_by' => $submitter->id,
+            'submitted_at' => now(),
+            'submitter_signature_method' => 'upload',
+            'submitter_signature_path' => $signaturePath,
+        ]);
+
+        $this->get(route('ems.reports.guest-approval', $report))->assertForbidden();
+
+        $approvalUrl = URL::temporarySignedRoute('ems.reports.guest-approval', now()->addHours(48), ['report' => $report]);
+        $review = $this->get($approvalUrl)
+            ->assertOk()
+            ->assertSee('Approve Report')
+            ->assertSee('Sign & Approve Report')
+            ->assertDontSee('Back to Reports');
+        $this->assertGuest();
+
+        $signatureUrl = URL::temporarySignedRoute('ems.reports.guest-file', now()->addHours(48), [
+            'report' => $report,
+            'file' => 'submitter-signature',
+        ]);
+        $this->get($signatureUrl)->assertOk();
+        $this->get(route('ems.reports.guest-file', [$report, 'submitter-signature']))->assertForbidden();
+
+        $drawnSignature = 'data:image/png;base64,'.base64_encode(base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='));
+        $approve = $this->patch($review->viewData('guestApproveUrl'), [
+            'signature_data' => $drawnSignature,
+            'signature_confirmation' => '1',
+        ])->assertRedirect();
+
+        $report->refresh();
+        $this->assertSame('approved', $report->status);
+        $this->assertNull($report->approved_by);
+        $this->assertSame('Dr. Emile', $report->approved_by_name);
+        $this->assertSame('emasiedu@ghanaports.gov.gov.gh', $report->approved_by_email);
+        Storage::disk('local')->assertExists($report->approver_signature_path);
+        $this->get($approve->headers->get('Location'))
+            ->assertOk()
+            ->assertSee('Dr. Emile')
+            ->assertDontSee('Approve Report');
+        $this->assertGuest();
+    }
+
+    public function test_a_submitter_with_approve_permission_can_review_sign_and_approve_their_report(): void
+    {
+        Storage::fake('local');
+        $user = User::factory()->create([
+            'sso_user_id' => (string) Str::uuid(),
+            'name' => 'EMS Approver',
+        ]);
+        $report = EmsReport::withoutGlobalScopes()->create([
+            'type' => 'mileage',
+            'period_start' => today(),
+            'period_end' => today(),
+            'status' => 'submitted',
+            'snapshot' => [],
+            'prepared_by' => $user->id,
+            'submitted_by' => $user->id,
+            'submitted_at' => now(),
+            'branch_code' => 'HQ',
+        ]);
+        $session = [
+            'sso.permissions_synced_at' => now()->timestamp,
+            'sso.active_branch_code' => 'HQ',
+            'sso.branches.codes' => ['HQ'],
+            'sso.permissions' => ['emsreports' => ['view','manage','approve']],
+        ];
+
+        $this->actingAs($user)->withSession($session)->get(route('ems.reports'))
+            ->assertOk()
+            ->assertSee('Review &amp; Approve', false)
+            ->assertDontSee('Export Data CSV')
+            ->assertViewHas('reports', fn ($reports) => $reports->pluck('id')->all() === [$report->id]);
+        $this->assertFalse(\Illuminate\Support\Facades\Route::has('ems.reports.export'));
+
+        $this->actingAs($user)->withSession($session)->get(route('ems.reports.print', $report))
+            ->assertOk()
+            ->assertSee('Approve Report')
+            ->assertSee('Sign & Approve Report');
+
+        $signature = 'data:image/png;base64,'.base64_encode(base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='));
+        $this->actingAs($user)->withSession($session)->patch(route('ems.reports.approve', $report), [
+            'signature_data' => $signature,
+            'signature_confirmation' => '1',
+        ])->assertRedirect();
+
+        $report->refresh();
+        $this->assertSame('approved', $report->status);
+        $this->assertSame($user->id, $report->approved_by);
+        Storage::disk('local')->assertExists($report->approver_signature_path);
+    }
+
+    public function test_the_approval_form_has_only_one_upload_and_rejects_physical_report_pdfs(): void
+    {
+        Storage::fake('local');
+        $submitter = User::factory()->create();
+        $approver = User::factory()->create();
+        $report = EmsReport::create([
+            'type' => 'mileage',
+            'period_start' => today(),
+            'period_end' => today(),
+            'status' => 'submitted',
+            'snapshot' => [],
+            'prepared_by' => $submitter->id,
+            'submitted_by' => $submitter->id,
+            'submitted_at' => now(),
+        ]);
+
+        $this->actingAs($approver)->get(route('ems.reports.print', $report))
+            ->assertOk()
+            ->assertSee('name="signature_file"', false)
+            ->assertDontSee('name="signed_report"', false)
+            ->assertDontSee('Upload a physically signed report');
+
+        $this->actingAs($approver)->patch(route('ems.reports.approve', $report), [
+            'signed_report' => UploadedFile::fake()->create('signed-report.pdf', 100, 'application/pdf'),
+            'signature_confirmation' => '1',
+        ])->assertSessionHasErrors('signed_report');
+
+        $report->refresh();
+        $this->assertSame('submitted', $report->status);
+        $this->assertNull($report->approver_signature_method);
+        $this->assertNull($report->signed_report_path);
+    }
+
+    public function test_signature_images_are_cropped_for_display_and_scaled_to_fill_the_signature_area(): void
+    {
+        Storage::fake('local');
+        $user = User::factory()->create();
+        $path = 'ems-report-signatures/crop-test/submitter.png';
+        $canvas = imagecreatetruecolor(700, 180);
+        imagealphablending($canvas, false);
+        imagesavealpha($canvas, true);
+        imagefill($canvas, 0, 0, imagecolorallocatealpha($canvas, 255, 255, 255, 127));
+        imagealphablending($canvas, true);
+        imagesetthickness($canvas, 4);
+        imageline($canvas, 20, 70, 75, 95, imagecolorallocate($canvas, 10, 30, 60));
+        ob_start();
+        imagepng($canvas);
+        Storage::disk('local')->put($path, ob_get_clean());
+        imagedestroy($canvas);
+        $report = EmsReport::create([
+            'type' => 'mileage',
+            'period_start' => today(),
+            'period_end' => today(),
+            'status' => 'submitted',
+            'snapshot' => [],
+            'prepared_by' => $user->id,
+            'submitted_by' => $user->id,
+            'submitted_at' => now(),
+            'submitter_signature_method' => 'drawn',
+            'submitter_signature_path' => $path,
+        ]);
+
+        $this->actingAs($user)->get(route('ems.reports.file', [$report, 'submitter-signature']))->assertOk();
+
+        $normalizedPath = $path.'.normalized.png';
+        Storage::disk('local')->assertExists($path);
+        Storage::disk('local')->assertExists($normalizedPath);
+        $dimensions = getimagesizefromstring(Storage::disk('local')->get($normalizedPath));
+        $this->assertLessThan(150, $dimensions[0]);
+        $this->assertLessThan(100, $dimensions[1]);
+        $this->actingAs($user)->get(route('ems.reports.print', $report))
+            ->assertOk()
+            ->assertSee('width:100%;max-width:320px;height:100px', false);
+    }
+
+    public function test_submitted_reports_can_be_edited_or_deleted_by_the_preparer_but_approved_reports_are_locked(): void
+    {
+        Storage::fake('local');
+        $preparer = User::factory()->create();
+        $otherUser = User::factory()->create();
+        $signaturePath = 'ems-report-signatures/test/submitter.png';
+        Storage::disk('local')->put($signaturePath, 'signature');
+        $submitted = EmsReport::create([
+            'type' => 'mileage',
+            'period_start' => '2026-08-01',
+            'period_end' => '2026-08-07',
+            'status' => 'submitted',
+            'snapshot' => [],
+            'prepared_by' => $preparer->id,
+            'submitted_by' => $preparer->id,
+            'submitted_at' => now(),
+            'submitter_signature_method' => 'upload',
+            'submitter_signature_path' => $signaturePath,
+        ]);
+
+        $this->actingAs($otherUser)->get(route('ems.reports.edit', $submitted))->assertForbidden();
+        $this->actingAs($preparer)->get(route('ems.reports.edit', $submitted))
+            ->assertOk()
+            ->assertSee('Edit Submitted Report')
+            ->assertSee('returns it to Draft')
+            ->assertSee('href="'.route('ems.reports').'"', false)
+            ->assertSee('<div class="gpha-page-shell space-y-6">', false)
+            ->assertDontSee('gpha-page-shell max-w-5xl', false);
+
+        $updateResponse = $this->actingAs($preparer)->put(route('ems.reports.update', $submitted), [
+            'type' => 'availability',
+            'period_preset' => 'custom',
+            'period_start' => '2026-08-08',
+            'period_end' => '2026-08-14',
+        ]);
+        $updateResponse->assertRedirect(route('ems.reports'))
+            ->assertSessionHas('success', 'Report updated and returned to Draft.')
+            ->assertSessionHas('success_report_uuid', $submitted->uuid);
+
+        $this->get(route('ems.reports'))
+            ->assertOk()
+            ->assertSee('View Report')
+            ->assertSee('href="'.route('ems.reports.print', $submitted).'"', false);
+
+        $submitted->refresh();
+        $this->assertSame('draft', $submitted->status);
+        $this->assertSame('availability', $submitted->type);
+        $this->assertNull($submitted->submitted_by);
+        $this->assertNull($submitted->submitted_at);
+        $this->assertNull($submitted->submitter_signature_path);
+        Storage::disk('local')->assertMissing($signaturePath);
+
+        $this->actingAs($preparer)->delete(route('ems.reports.destroy', $submitted))
+            ->assertRedirect(route('ems.reports'));
+        $this->assertDatabaseMissing('ems_reports', ['id' => $submitted->id]);
+
+        $approved = EmsReport::create([
+            'type' => 'weekly_activity',
+            'period_start' => '2026-08-01',
+            'period_end' => '2026-08-07',
+            'status' => 'approved',
+            'snapshot' => [],
+            'prepared_by' => $preparer->id,
+            'submitted_by' => $preparer->id,
+            'submitted_at' => now(),
+            'approved_by' => $otherUser->id,
+            'approved_at' => now(),
+        ]);
+
+        $this->actingAs($preparer)->get(route('ems.reports.edit', $approved))->assertStatus(422);
+        $this->actingAs($preparer)->delete(route('ems.reports.destroy', $approved))->assertStatus(422);
+        $this->assertDatabaseHas('ems_reports', ['id' => $approved->id, 'status' => 'approved']);
+    }
+
+    public function test_report_approvers_can_filter_all_reports_while_preparers_only_see_their_own(): void
+    {
+        $firstPreparer = User::factory()->create(['sso_user_id' => (string) Str::uuid(), 'name' => 'First Preparer']);
+        $secondPreparer = User::factory()->create(['sso_user_id' => (string) Str::uuid(), 'name' => 'Second Preparer']);
+        $approver = User::factory()->create(['sso_user_id' => (string) Str::uuid(), 'name' => 'Report Approver']);
+        $draft = EmsReport::withoutGlobalScopes()->create([
+            'type' => 'mileage', 'period_start' => today(), 'period_end' => today(), 'status' => 'draft',
+            'snapshot' => [], 'prepared_by' => $firstPreparer->id, 'branch_code' => 'HQ',
+        ]);
+        $submitted = EmsReport::withoutGlobalScopes()->create([
+            'type' => 'availability', 'period_start' => today(), 'period_end' => today(), 'status' => 'submitted',
+            'snapshot' => [], 'prepared_by' => $secondPreparer->id, 'submitted_by' => $secondPreparer->id,
+            'submitted_at' => now(), 'branch_code' => 'HQ',
+        ]);
+        $approved = EmsReport::withoutGlobalScopes()->create([
+            'type' => 'weekly_activity', 'period_start' => today(), 'period_end' => today(), 'status' => 'approved',
+            'snapshot' => [], 'prepared_by' => $secondPreparer->id, 'submitted_by' => $secondPreparer->id,
+            'submitted_at' => now(), 'approved_by' => $approver->id, 'approved_at' => now(), 'branch_code' => 'HQ',
+        ]);
+        $baseSession = [
+            'sso.permissions_synced_at' => now()->timestamp,
+            'sso.active_branch_code' => 'HQ',
+            'sso.branches.codes' => ['HQ'],
+        ];
+
+        $this->actingAs($firstPreparer)->withSession($baseSession + [
+            'sso.permissions' => ['emsreports' => ['view','manage']],
+        ])->get(route('ems.reports'))
+            ->assertOk()
+            ->assertSee('Ambulance Mileage')
+            ->assertViewHas('reports', fn ($reports) => $reports->pluck('id')->all() === [$draft->id]);
+
+        $this->actingAs($approver)->withSession($baseSession + [
+            'sso.permissions' => ['emsreports' => ['view','approve']],
+        ])->get(route('ems.reports'))
+            ->assertOk()
+            ->assertSee('All Reports')
+            ->assertSee('Submitted Reports')
+            ->assertSee('Approved Reports')
+            ->assertSee('Report Type')
+            ->assertSee('Report Date From')
+            ->assertSee('Report Date To')
+            ->assertSee('Apply Filters')
+            ->assertViewHas('activeReportTab', 'all')
+            ->assertViewHas('reports', fn ($reports) => $reports->pluck('id')->sort()->values()->all() === collect([$draft->id,$submitted->id,$approved->id])->sort()->values()->all());
+
+        $this->actingAs($approver)->withSession($baseSession + [
+            'sso.permissions' => ['emsreports' => ['view','approve']],
+        ])->get(route('ems.reports', ['report_tab' => 'submitted', 'report_type' => 'availability']))
+            ->assertOk()
+            ->assertSee('aria-current="page"', false)
+            ->assertSee('Radio &amp; Availability', false)
+            ->assertSee('Review &amp; Approve', false)
+            ->assertDontSee('Export Data CSV')
+            ->assertViewHas('activeReportTab', 'submitted')
+            ->assertViewHas('reportFilters', fn ($filters) => $filters['report_type'] === 'availability')
+            ->assertViewHas('reports', fn ($reports) => $reports->pluck('id')->all() === [$submitted->id]);
+
+        $this->actingAs($approver)->withSession($baseSession + [
+            'sso.permissions' => ['emsreports' => ['view','approve']],
+        ])->get(route('ems.reports', ['report_tab' => 'approved']))
+            ->assertOk()
+            ->assertViewHas('activeReportTab', 'approved')
+            ->assertViewHas('reports', fn ($reports) => $reports->pluck('id')->all() === [$approved->id]);
+    }
+
+    public function test_reports_list_can_be_filtered_by_a_report_generation_date_range(): void
+    {
+        $preparer = User::factory()->create();
+        $older = EmsReport::create([
+            'type' => 'mileage',
+            'period_start' => '2026-08-10',
+            'period_end' => '2026-08-10',
+            'status' => 'draft',
+            'snapshot' => [],
+            'prepared_by' => $preparer->id,
+            'created_at' => '2026-08-18 09:00:00',
+        ]);
+        EmsReport::create([
+            'type' => 'availability',
+            'period_start' => '2026-08-11',
+            'period_end' => '2026-08-11',
+            'status' => 'draft',
+            'snapshot' => [],
+            'prepared_by' => $preparer->id,
+            'created_at' => '2026-08-19 09:00:00',
+        ]);
+
+        $this->actingAs($preparer)->get(route('ems.reports', [
+            'report_date_from' => '2026-08-17',
+            'report_date_to' => '2026-08-18',
+        ]))
+            ->assertOk()
+            ->assertSee('Report Date From')
+            ->assertSee('Report Date To')
+            ->assertSee('value="2026-08-17"', false)
+            ->assertSee('value="2026-08-18"', false)
+            ->assertViewHas('reports', fn ($reports) => $reports->pluck('id')->all() === [$older->id]);
+
+        $this->actingAs($preparer)->get(route('ems.reports', [
+            'report_date_from' => '2026-08-19',
+            'report_date_to' => '2026-08-18',
+        ]))->assertSessionHasErrors('report_date_to');
     }
 
     public function test_each_report_type_can_use_every_easy_reporting_period(): void

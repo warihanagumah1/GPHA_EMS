@@ -5,8 +5,10 @@ namespace Tests\Feature;
 use App\Models\EmsReport;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -162,15 +164,19 @@ class SsoIntegrationTest extends TestCase
 
     public function test_report_approval_requires_the_exact_approve_permission(): void
     {
+        Storage::fake('local');
         $user = User::factory()->create(['sso_user_id' => (string) Str::uuid()]);
+        $submitter = User::factory()->create();
         $report = EmsReport::withoutGlobalScopes()->create([
             'type' => 'mileage',
             'period_start' => '2026-07-01',
             'period_end' => '2026-07-07',
-            'status' => 'draft',
+            'status' => 'submitted',
             'snapshot' => [],
             'branch_code' => 'HQ',
-            'prepared_by' => $user->id,
+            'prepared_by' => $submitter->id,
+            'submitted_by' => $submitter->id,
+            'submitted_at' => now(),
         ]);
         $session = [
             'sso.permissions' => ['emsreports' => ['view', 'manage']],
@@ -180,12 +186,20 @@ class SsoIntegrationTest extends TestCase
         ];
 
         $this->actingAs($user)->withSession($session)
-            ->patch(route('ems.reports.approve', $report))
+            ->patch(route('ems.reports.approve', $report), [
+                'signature_method' => 'upload',
+                'signature_file' => UploadedFile::fake()->createWithContent('signature.png', base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=')),
+                'signature_confirmation' => '1',
+            ])
             ->assertForbidden();
 
         $session['sso.permissions.emsreports'][] = 'approve';
         $this->actingAs($user)->withSession($session)
-            ->patch(route('ems.reports.approve', $report))
+            ->patch(route('ems.reports.approve', $report), [
+                'signature_method' => 'upload',
+                'signature_file' => UploadedFile::fake()->createWithContent('signature.png', base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=')),
+                'signature_confirmation' => '1',
+            ])
             ->assertRedirect();
 
         $this->assertDatabaseHas('ems_reports', [

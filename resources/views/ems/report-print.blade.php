@@ -11,14 +11,31 @@
     $periodEndAt=$report->period_end->format('d M Y').', 23:59';
     $title=match($report->type){'mileage'=>$cadence.' Ambulance Mileage Report','availability'=>$cadence.' Radio & Availability Report',default=>$cadence.' Operational Activities Report'};
     $description=match($report->type){'mileage'=>'Odometer readings, kilometres travelled, and daily-average performance for GPHA ambulances during the reporting period.','availability'=>'Radio communication response and operational availability checks for EMS units and partner departments.','weekly_activity'=>'Departmental activities, meetings, training, inspections, key engagements, and follow-up items during the reporting period.',default=>'EMS operational report.'};
+    $guestApproval=$guestApproval??false;
+    $reportPermissions=app(\App\Application\Sso\PermissionService::class);
+    $testingAccess=app()->environment('testing')&&!auth()->user()?->sso_user_id;
+    $canSubmit=!$guestApproval&&$report->status==='draft'&&(int)$report->prepared_by===(int)auth()->id()&&($testingAccess||$reportPermissions->allows('EMSReports','Manage'));
+    $canApprove=$guestApproval
+        ? $report->status==='submitted'
+        : $report->status==='submitted'&&($testingAccess||$reportPermissions->allows('EMSReports','Approve'));
+    $reportFileUrl=fn(string $file)=>$guestApproval
+        ? \Illuminate\Support\Facades\URL::temporarySignedRoute('ems.reports.guest-file',now()->addHours((int)config('ems.report_approval_link_hours',72)),['report'=>$report,'file'=>$file])
+        : route('ems.reports.file',[$report,$file]);
 @endphp
 <title>{{ $title }} · {{ $report->period_end->format('d M Y') }}</title>
 <style>
 @page{size:A4 portrait;margin:9mm}*{box-sizing:border-box}body{margin:0;background:#e9eef5;color:#10213c;font-family:"Nunito Sans",Arial,sans-serif;font-size:11px;line-height:1.35}.toolbar{position:sticky;top:0;z-index:10;display:flex;justify-content:flex-end;gap:8px;max-width:210mm;margin:0 auto;padding:12px;background:#e9eef5}.toolbar a,.toolbar button{border:0;border-radius:5px;padding:9px 14px;font-weight:800;text-decoration:none;cursor:pointer}.back{background:#fff;color:#00579b;border:1px solid #b9c8da!important}.print{background:#00579b;color:#fff}.sheet{width:210mm;min-height:297mm;margin:0 auto 20px;padding:10mm;background:#fff;box-shadow:0 8px 30px rgba(15,45,80,.15)}.header{display:grid;grid-template-columns:75px 1fr 138px;align-items:center;gap:12px;border:2px solid #092f6d;border-radius:14px 14px 0 0;padding:10px}.logo{width:70px;height:70px;object-fit:contain}.authority{text-align:center}.authority h1{margin:0;color:#092f6d;font-size:19px;font-weight:900}.authority h2{margin:3px 0 0;color:#d51f26;font-size:15px;font-weight:900}.period{border:2px solid #d51f26;border-radius:8px;text-align:center;overflow:hidden}.period b{display:block;background:#d51f26;color:#fff;padding:5px}.period span{display:block;padding:7px 4px;color:#c61c23;font-weight:900}.report-title{margin:0;background:#092f6d;color:#fff;text-align:center;font-size:18px;font-weight:900;padding:7px 8px;text-transform:uppercase}.report-title small{display:block;margin-top:2px;font-size:9px;font-weight:800;letter-spacing:.02em}.intro{display:grid;grid-template-columns:1fr 150px;gap:10px;margin-top:10px}.intro-text,.generated{border:1.5px solid #8fa5c2;border-radius:8px;padding:10px}.generated{text-align:center}.generated b{display:block;color:#092f6d}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-top:10px}.metrics.activity-metrics{grid-template-columns:repeat(2,1fr)}.metric{border:1px solid #c7d2e0;border-radius:7px;padding:8px;text-align:center}.metric b{display:block;color:#092f6d;font-size:16px}.band{margin-top:12px;background:#092f6d;color:#fff;border-radius:6px 6px 0 0;padding:6px 9px;text-align:center;font-size:13px;font-weight:900;text-transform:uppercase;break-after:avoid}.table-wrap{overflow:hidden;border:1px solid #7e95b4;border-radius:0 0 7px 7px}table{width:100%;border-collapse:collapse}thead{display:table-header-group}.print-table-footer{display:none}th,td{border-right:1px solid #aab8ca;border-bottom:1px solid #aab8ca;padding:6px;vertical-align:top;overflow-wrap:anywhere}th:last-child,td:last-child{border-right:0}tr:last-child td{border-bottom:0}th{background:#eef3f8;color:#092f6d;font-weight:900;text-align:left}tr{break-inside:avoid;page-break-inside:avoid}tr.allow-row-split{break-inside:auto;page-break-inside:auto}.number{text-align:right}.ok{color:#087a39;font-weight:900}.bad{color:#cf1e28;font-weight:900}.day{width:105px;background:#f1f5f9;color:#092f6d;font-weight:900}.day small{display:block;color:#64748b}.response-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}.response-item{border-radius:5px;padding:4px 6px;break-inside:avoid;page-break-inside:avoid}.response-item b,.response-item span{display:block}.response-item span{font-size:9px}.response-item.responded{background:#dcfce7;color:#087a39}.response-item.negative{background:#fee2e2;color:#b91c1c}.report-rich-text p{margin:0 0 4px}.report-rich-text ul,.report-rich-text ol{margin:4px 0;padding-left:30px;list-style-position:outside}.report-rich-text>li{margin-left:30px}.report-rich-text li{padding-left:2px;break-inside:avoid;page-break-inside:avoid}.two-col{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:12px}.box{border:1.5px solid #7790b2;border-radius:7px;overflow:hidden;break-inside:avoid}.box h3{margin:0;padding:5px 8px;background:#087a39;color:#fff;text-align:center;font-size:12px;text-transform:uppercase}.box.recommend h3{background:#092f6d}.box ol,.box ul{margin:7px 10px;padding-left:18px}.box li{margin:4px 0}.signatures{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:10px}.sign{border:1.5px solid #7790b2;border-radius:7px;text-align:center;overflow:hidden;min-height:58px}.sign b{display:block;background:#092f6d;color:#fff;padding:3px}.sign.prepared b{background:#087a39}.sign div{padding:7px;font-size:12px}.document-meta{margin-top:8px;text-align:center;color:#64748b;font-size:9px}.page-break{break-before:page}.empty{padding:20px!important;text-align:center;color:#64748b}.status{display:inline-block;border-radius:999px;padding:2px 7px;background:#e2e8f0;font-weight:800}.status.completed,.status.responded{background:#dcfce7;color:#087a39}.status.cancelled,.status.negative{background:#fee2e2;color:#b91c1c}@media print{body{background:#fff}.toolbar{display:none}.sheet{width:auto;min-height:0;margin:0;padding:0;box-shadow:none}.table-wrap{overflow:visible;border:0;border-radius:0}.table-wrap table{border:1px solid #7e95b4}.print-table-footer{display:table-footer-group}.print-table-footer td{height:0;padding:0;border:0;border-bottom:1px solid #7e95b4}.document-meta{display:none}.report-title,.period b,.band,.box h3,.sign b,.response-item{-webkit-print-color-adjust:exact;print-color-adjust:exact}.two-col,.signatures{break-inside:avoid}}
 </style>
+<style>
+.workflow,.notice{max-width:210mm;margin:0 auto 14px;background:#fff;border-radius:10px;padding:16px;box-shadow:0 5px 20px rgba(15,45,80,.12);font-size:14px}.workflow h2{margin:0;color:#092f6d;font-size:20px}.workflow p{margin:5px 0 14px;color:#52647c;font-weight:600}.workflow form{display:grid;gap:13px}.workflow label,.workflow form>div{display:grid;gap:6px}.workflow input[type=file]{width:100%;border:1px solid #9aabc0;border-radius:6px;background:#fff;padding:9px}.workflow canvas{display:block;width:100%;height:150px;border:2px dashed #7790b2;border-radius:7px;background:#fff;touch-action:none}.workflow small{color:#64748b}.workflow .confirmation{display:flex;grid-template-columns:auto 1fr;align-items:flex-start}.workflow button{width:max-content;border:0;border-radius:6px;padding:10px 15px;font-weight:900;cursor:pointer}.workflow .primary{background:#00579b;color:#fff}.workflow .secondary{background:#e2e8f0;color:#10213c}.workflow .signature-choice-divider{display:flex;align-items:center;gap:10px;color:#64748b;font-size:12px;font-weight:900}.workflow .signature-choice-divider::before,.workflow .signature-choice-divider::after{content:"";height:1px;flex:1;background:#cbd5e1}.notice.success{border-left:5px solid #087a39}.notice.error{border-left:5px solid #cf1e28;color:#9f1720}.signer-name{display:block;font-weight:400}.signer-title{display:block;margin-top:2px;font-weight:900}.signature-date{display:block;margin-top:5px}.signature-image{display:block;width:100%;max-width:320px;height:100px;margin:10px auto 6px;object-fit:contain;object-position:center}.report-state{align-self:center;border-radius:999px;padding:6px 10px;background:#dce6f2;color:#092f6d;font-weight:900;text-transform:uppercase}.physical-note{display:block;margin-top:4px;font-size:9px;font-weight:800;color:#52647c}@media print{.workflow,.notice{display:none!important}.signature-image{width:100%;max-width:280px;height:80px;margin-left:auto;margin-right:auto}}
+</style>
 </head>
 <body>
-<div class="toolbar"><a class="back" href="{{ route('ems.reports') }}">Back to Reports</a><button class="print" onclick="window.print()">Print / Save PDF</button></div>
+<div class="toolbar"><span class="report-state">{{ str($report->status)->headline() }}</span>@unless($guestApproval)<a class="back" href="{{ route('ems.reports') }}">Back to Reports</a>@endunless @if($report->signed_report_path)<a class="back" href="{{ $reportFileUrl('signed-report') }}">Download Signed PDF</a>@endif<button class="print" onclick="window.print()">Print / Save PDF</button></div>
+@if(session('success'))<div class="notice success">{{ session('success') }}</div>@endif
+@if($errors->any())<div class="notice error">{{ $errors->first() }}</div>@endif
+@if($canSubmit) @include('ems.reports._signature-form', ['role' => 'submitter']) @endif
+@if($canApprove) @include('ems.reports._signature-form', ['role' => 'approver']) @endif
 <main class="sheet">
     <header class="header"><img class="logo" src="{{ asset('images/gpha-logo.jpg') }}" alt="GPHA logo"><div class="authority"><h1>GHANA PORTS AND HARBOURS AUTHORITY (GPHA)</h1><h2>EMERGENCY MEDICAL SERVICES (EMS) DEPARTMENT</h2></div><div class="period"><b>REPORTING PERIOD</b><span>{{ $periodStartAt }}<br>to<br>{{ $periodEndAt }}</span></div></header>
     <h3 class="report-title">{{ $title }}<small>{{ $periodLabel }} · {{ $periodStartAt }} - {{ $periodEndAt }}</small></h3>
@@ -41,7 +58,67 @@
     @endif
 
     <section class="two-col"><div class="box"><h3>Summary of Findings</h3><ul><li><strong>{{ $cadence }} reporting period:</strong> {{ $periodStartAt }} to {{ $periodEndAt }}.</li>@forelse($report->summary??[] as $item)<li>{{ $item }}</li>@empty<li>No summary findings were generated.</li>@endforelse</ul></div><div class="box recommend"><h3>Recommendations</h3><ol>@forelse($report->recommendations??[] as $item)<li>{{ $item }}</li>@empty<li>Continue routine monitoring and documentation.</li>@endforelse</ol></div></section>
-    <section class="signatures"><div class="sign prepared"><b>PREPARED BY</b><div><strong>{{ $report->preparedBy?->name??'SAEMT' }}</strong><br>SAEMT<br>Date: {{ $report->created_at?->format('d M Y') }}</div></div><div class="sign"><b>SUBMITTED TO / APPROVED BY</b><div><strong>{{ $report->approvedBy?->name??'EMS Manager' }}</strong>@if($report->approved_at)<br>Approved {{ $report->approved_at->format('d M Y, H:i') }}@endif</div></div></section>
+    <section class="signatures"><div class="sign prepared"><b>PREPARED BY</b><div><span class="signer-name">{{ $report->preparedBy?->name??'EMS Report Officer' }}</span><strong class="signer-title">{{ $report->preparedBy?->job_title?:'SAEMT' }}</strong>@if($report->submitter_signature_path)<img class="signature-image" src="{{ $reportFileUrl('submitter-signature') }}" alt="Submitter signature">@endif<span class="signature-date">{{ $report->submitted_at?'Submitted':'Prepared' }}: {{ ($report->submitted_at??$report->created_at)?->format('d M Y, H:i') }}</span></div></div><div class="sign"><b>SUBMITTED TO / APPROVED BY</b><div>@if($report->approvedBy||$report->approved_by_name)<span class="signer-name">{{ $report->approvedBy?->name??$report->approved_by_name }}</span><strong class="signer-title">{{ $report->approvedBy?->job_title?:'EMS Manager' }}</strong>@else<span class="signer-name">Awaiting approval</span><strong class="signer-title">EMS Manager</strong>@endif @if($report->approver_signature_path)<img class="signature-image" src="{{ $reportFileUrl('approver-signature') }}" alt="Approver signature">@elseif($report->approver_signature_method==='physical')<span class="physical-note">Physical signature is contained in the uploaded signed PDF.</span>@endif @if($report->approved_at)<span class="signature-date">Approved: {{ $report->approved_at->format('d M Y, H:i') }}</span>@endif</div></div></section>
     <p class="document-meta">Generated from GPHA EMS operational records · {{ now()->format('d M Y H:i') }}</p>
 </main>
+<script>
+document.querySelectorAll('[data-signature-form]').forEach((form) => {
+    const canvas = form.querySelector('[data-signature-canvas]');
+    const hidden = form.querySelector('[data-signature-data]');
+    const signatureFile = form.querySelector('[data-signature-file]');
+    const context = canvas.getContext('2d');
+    let drawing = false;
+    let hasInk = false;
+
+    context.lineWidth = 3;
+    context.lineCap = 'round';
+    context.strokeStyle = '#10213c';
+
+    const point = (event) => {
+        const rect = canvas.getBoundingClientRect();
+        return {x: (event.clientX - rect.left) * canvas.width / rect.width, y: (event.clientY - rect.top) * canvas.height / rect.height};
+    };
+    const clearDrawing = () => {
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        hidden.value = '';
+        hasInk = false;
+    };
+
+    canvas.addEventListener('pointerdown', (event) => {
+        if (signatureFile) signatureFile.value = '';
+        drawing = true;
+        hasInk = true;
+        canvas.setPointerCapture(event.pointerId);
+        const position = point(event);
+        context.beginPath();
+        context.moveTo(position.x, position.y);
+    });
+    canvas.addEventListener('pointermove', (event) => {
+        if (!drawing) return;
+        const position = point(event);
+        context.lineTo(position.x, position.y);
+        context.stroke();
+    });
+    ['pointerup','pointercancel'].forEach((name) => canvas.addEventListener(name, () => drawing = false));
+    form.querySelector('[data-clear-signature]').addEventListener('click', () => {
+        clearDrawing();
+    });
+    signatureFile?.addEventListener('change', () => {
+        if (!signatureFile.files.length) return;
+        clearDrawing();
+    });
+    form.addEventListener('submit', (event) => {
+        if (signatureFile?.files.length) return;
+        if (hasInk) {
+            hidden.value = canvas.toDataURL('image/png');
+            return;
+        }
+        event.preventDefault();
+        alert('Please draw your signature or choose a file before continuing.');
+    });
+});
+</script>
+@if(request()->boolean('print'))
+<script data-auto-print>window.addEventListener('load',()=>setTimeout(()=>window.print(),250));</script>
+@endif
 </body></html>

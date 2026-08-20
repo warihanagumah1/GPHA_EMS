@@ -302,8 +302,13 @@ The main Central Login permission components are:
 - `ReadinessAndActivities`
 - `EMSReports`
 - `EMSActivityAndAudit`
+- `EMSSettings`
 
 Permissions such as `View`, `Manage`, `Export`, and `Approve` are checked by the relevant routes and actions.
+
+`EMSSettings.Manage` controls the Settings page, where active locations and
+departments or units are maintained. Deactivated or renamed settings do not
+rewrite historical operational records or report snapshots.
 
 ## Pagination and mobile behavior
 

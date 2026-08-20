@@ -43,9 +43,9 @@
     @if($canManage)
     <section x-cloak x-show="showForm" x-transition class="gpha-panel p-5">
         @if($module==='ambulances')
-            <x-ems.ambulance-form :action="route('ems.ambulances.store')" />
+            <x-ems.ambulance-form :locations="$locations" :action="route('ems.ambulances.store')" />
         @elseif($module==='dispatches')
-            <x-ems.movement-form :ambulances="$ambulances" />
+            <x-ems.movement-form :ambulances="$ambulances" :locations="$locations" />
         @elseif($module==='mileage')
             <form method="POST" action="{{ route('ems.mileage.store') }}" class="space-y-5">@csrf
                 <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
@@ -62,8 +62,8 @@
             <form method="POST" action="{{ route('ems.availability.store') }}" class="space-y-5" x-data="{selectedUnits:@js($selectedAvailabilityUnits)}">@csrf
                 <div class="grid gap-4 md:grid-cols-3">
                     <label><span class="gpha-label">Check Date <span class="text-red-600">*</span></span><input type="date" name="check_date" value="{{ old('check_date',today()->toDateString()) }}" max="{{ today()->toDateString() }}" class="gpha-input" required></label>
-                    <label><span class="gpha-label">Session <span class="text-red-600">*</span></span><select name="period" class="gpha-input" required><option value="morning" @selected(old('period','morning')==='morning')>Morning</option><option value="afternoon" @selected(old('period')==='afternoon')>Afternoon</option></select></label>
-                    <label><span class="gpha-label">Check Time <span class="text-red-600">*</span></span><input type="time" name="checked_at" value="{{ old('checked_at',now()->format('H:i')) }}" min="00:00" max="23:59" step="60" class="gpha-input" required></label>
+                    <label><span class="gpha-label">Session <span class="text-red-600">*</span></span><select name="period" class="gpha-input" required><option value="morning" @selected(old('period','morning')==='morning')>Morning</option><option value="afternoon" @selected(old('period')==='afternoon')>Afternoon</option><option value="evening" @selected(old('period')==='evening')>Evening</option></select></label>
+                    <x-ems.time-picker name="checked_at" id="availability-checked-at" label="Check Time" :value="old('checked_at',now()->format('H:i'))" :required="true" />
                 </div>
                 <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3"><p class="font-semibold text-blue-900">Select only the units included in this check session, then record their responses.</p><div class="flex flex-wrap gap-2"><button type="button" @click="selectedUnits=@js($availabilityUnits->values()->all())" class="gpha-button-secondary border-blue-300 bg-white">Select All Units</button><button type="button" @click="selectedUnits=[]" class="gpha-button-secondary border-blue-300 bg-white">Clear Units</button><button type="button" data-mark-all-responded class="gpha-button-secondary border-blue-300 bg-white">Mark Selected Responded</button></div></div>
                 <div class="overflow-x-auto rounded-xl border border-slate-200">
@@ -72,7 +72,7 @@
                         <td><input type="checkbox" value="{{ $unit }}" x-model="selectedUnits" class="h-5 w-5 rounded border-slate-300 text-gpha-primary" aria-label="Include {{ $unit }}"></td>
                         <td class="font-extrabold">{{ $unit }}<input type="hidden" name="checks[{{ $index }}][unit_name]" value="{{ $unit }}" :disabled="!selectedUnits.includes(@js($unit))"></td>
                         <td><select name="checks[{{ $index }}][responded]" data-response class="gpha-input min-w-40" :disabled="!selectedUnits.includes(@js($unit))" :required="selectedUnits.includes(@js($unit))"><option value="">Select response</option><option value="1" @selected(old("checks.$index.responded")==='1')>Responded</option><option value="0" @selected(old("checks.$index.responded")==='0')>No response</option></select></td>
-                        <td><select name="checks[{{ $index }}][response_location]" class="gpha-input min-w-52" :disabled="!selectedUnits.includes(@js($unit))"><option value="">Not stated</option>@foreach(config('ems.movement_locations') as $location)<option value="{{ $location }}" @selected(old("checks.$index.response_location")===$location)>{{ $location }}</option>@endforeach</select></td>
+                        <td><select name="checks[{{ $index }}][response_location]" class="gpha-input min-w-52" :disabled="!selectedUnits.includes(@js($unit))"><option value="">Not stated</option>@foreach($locations as $location)<option value="{{ $location }}" @selected(old("checks.$index.response_location")===$location)>{{ $location }}</option>@endforeach</select></td>
                         <td><input name="checks[{{ $index }}][observation]" value="{{ old("checks.$index.observation") }}" class="gpha-input min-w-60" maxlength="1000" placeholder="Fault, reason, or note" :disabled="!selectedUnits.includes(@js($unit))"></td>
                     </tr>@endforeach</tbody></table>
                 </div>
@@ -111,8 +111,8 @@
             <div x-cloak x-show="moreFilters" x-transition class="grid gap-4 rounded-xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2 xl:grid-cols-4">
                 <label><span class="gpha-label">Priority</span><select name="priority" class="gpha-input"><option value="">All priorities</option>@foreach(config('ems.movement_priorities') as $value => $label)<option value="{{ $value }}" @selected(($movementFilters['priority']??'')===$value)>{{ $label }}</option>@endforeach</select></label>
                 <label><span class="gpha-label">Case Category</span><select name="purpose" class="gpha-input"><option value="">All categories</option>@foreach(config('ems.case_categories') as $value)<option value="{{ $value }}" @selected(($movementFilters['purpose']??'')===$value)>{{ $value }}</option>@endforeach</select></label>
-                <label><span class="gpha-label">Origin</span><input type="search" name="origin" list="movement-filter-origin-options" value="{{ $movementFilters['origin']??'' }}" class="gpha-input" placeholder="All origins"><datalist id="movement-filter-origin-options">@foreach(config('ems.movement_locations') as $value)<option value="{{ $value }}"></option>@endforeach</datalist></label>
-                <label><span class="gpha-label">Destination</span><input type="search" name="destination" list="movement-filter-destination-options" value="{{ $movementFilters['destination']??'' }}" class="gpha-input" placeholder="All destinations"><datalist id="movement-filter-destination-options">@foreach(config('ems.movement_locations') as $value)<option value="{{ $value }}"></option>@endforeach</datalist></label>
+                <label><span class="gpha-label">Origin</span><input type="search" name="origin" list="movement-filter-origin-options" value="{{ $movementFilters['origin']??'' }}" class="gpha-input" placeholder="All origins"><datalist id="movement-filter-origin-options">@foreach($locations as $value)<option value="{{ $value }}"></option>@endforeach</datalist></label>
+                <label><span class="gpha-label">Destination</span><input type="search" name="destination" list="movement-filter-destination-options" value="{{ $movementFilters['destination']??'' }}" class="gpha-input" placeholder="All destinations"><datalist id="movement-filter-destination-options">@foreach($locations as $value)<option value="{{ $value }}"></option>@endforeach</datalist></label>
             </div>
             <div class="flex flex-wrap justify-end gap-2"><button type="button" @click="moreFilters=!moreFilters" class="gpha-button-secondary" x-text="moreFilters?'Fewer Filters':'More Filters'"></button><a href="{{ route('ems.dispatches') }}" class="gpha-button-secondary">Clear</a><button class="gpha-button-primary">Apply Filters</button></div>
         </form>
@@ -157,34 +157,13 @@
             <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                 <label><span class="gpha-label">From Date</span><input type="date" name="date_from" value="{{ $availabilityFilters['date_from']??'' }}" class="gpha-input"></label>
                 <label><span class="gpha-label">To Date</span><input type="date" name="date_to" value="{{ $availabilityFilters['date_to']??'' }}" class="gpha-input"></label>
-                <label><span class="gpha-label">Session</span><select name="period" class="gpha-input"><option value="">All sessions</option>@foreach(['morning','afternoon'] as $value)<option value="{{ $value }}" @selected(($availabilityFilters['period']??'')===$value)>{{ str($value)->headline() }}</option>@endforeach</select></label>
+                <label><span class="gpha-label">Session</span><select name="period" class="gpha-input"><option value="">All sessions</option>@foreach(['morning','afternoon','evening'] as $value)<option value="{{ $value }}" @selected(($availabilityFilters['period']??'')===$value)>{{ str($value)->headline() }}</option>@endforeach</select></label>
                 <label><span class="gpha-label">Check Result</span><select name="response_status" class="gpha-input"><option value="">All results</option><option value="all_responded" @selected(($availabilityFilters['response_status']??'')==='all_responded')>All units responded</option><option value="has_no_response" @selected(($availabilityFilters['response_status']??'')==='has_no_response')>Has no response</option></select></label>
             </div>
             <div class="flex justify-end gap-2"><a href="{{ route('ems.availability') }}" class="gpha-button-secondary">Clear</a><button class="gpha-button-primary">Apply Filters</button></div>
         </form>
     </section>
 
-    @if($canManage)
-    <div x-data="{unitPanelOpen:@js($errors->has('name') || request()->boolean('manage_units'))}">
-        <div x-show="!unitPanelOpen" class="flex justify-end"><button type="button" @click="unitPanelOpen=true" class="gpha-button-primary">Manage Units</button></div>
-    <section x-cloak x-show="unitPanelOpen" x-transition class="gpha-panel overflow-hidden">
-        <div class="border-b border-slate-200 px-5 py-4">
-            <div class="flex flex-wrap items-start justify-between gap-3"><div><h2 class="text-xl font-black">Availability Check Units</h2><p class="font-semibold text-slate-500">Add or remove units.</p></div><button type="button" @click="unitPanelOpen=false" class="gpha-button-secondary">Close</button></div>
-            <form method="POST" action="{{ route('ems.availability.units.store') }}" class="mt-4 flex w-full flex-col gap-2 sm:flex-row lg:max-w-xl">@csrf
-                <label class="flex-1"><span class="gpha-label">New Unit</span><input name="name" value="{{ old('name') }}" class="gpha-input" maxlength="120" placeholder="Enter unit name" required></label>
-                <div class="flex items-end"><button class="gpha-button-primary w-full whitespace-nowrap">Save Unit</button></div>
-            </form>
-        </div>
-        <div class="overflow-x-auto"><table class="gpha-table"><thead><tr><th>Unit Name</th><th>Status</th><th class="gpha-actions-heading">Action</th></tr></thead><tbody>
-            @forelse($managedAvailabilityUnits as $unit)<tr><td class="font-extrabold">{{ $unit->name }}</td><td><span class="gpha-status {{ $unit->is_active?'bg-emerald-100 text-emerald-700':'bg-slate-100 text-slate-600' }}">{{ $unit->is_active?'Active':'Inactive' }}</span></td><td class="gpha-actions-cell">
-                @if($unit->is_active)<form method="POST" action="{{ route('ems.availability.units.destroy',$unit) }}" data-confirm-title="Remove Check Unit?" data-confirm-message="{{ $unit->name }} will no longer appear in new check sessions. Previous checks and reports will remain unchanged." data-confirm-label="Yes, Remove Unit" data-confirm-tone="danger">@csrf @method('DELETE')<button class="gpha-button-danger">Remove</button></form>
-                @else<form method="POST" action="{{ route('ems.availability.units.store') }}">@csrf<input type="hidden" name="name" value="{{ $unit->name }}"><button class="gpha-button-secondary">Restore</button></form>@endif
-            </td></tr>@empty<tr><td colspan="3" class="py-10 text-center text-slate-500">No managed check units found.</td></tr>@endforelse
-        </tbody></table></div>
-        <div class="border-t border-slate-200 px-5 py-4">{{ $managedAvailabilityUnits->links() }}</div>
-    </section>
-    </div>
-    @endif
     @endif
 
     @if($module==='activities')

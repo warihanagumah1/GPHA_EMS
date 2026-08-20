@@ -1,0 +1,15 @@
+<x-app-layout>
+<div class="gpha-page-shell space-y-6">
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p class="font-extrabold text-gpha-primary">Formal EMS Reporting</p><h1 class="text-3xl font-black text-slate-950">Edit {{ str($report->status)->headline() }} Report</h1><p class="mt-1 font-semibold text-slate-500">Changing a submitted report returns it to Draft and removes its previous submission signature.</p></div><a href="{{ route('ems.reports') }}" class="gpha-button-secondary">Back to Reports</a></div>
+    @if($errors->any())<x-dismissible-alert type="error">{{ $errors->first() }}</x-dismissible-alert>@endif
+    <section class="gpha-panel p-5">
+        <form method="POST" action="{{ route('ems.reports.update',$report) }}" class="grid gap-4 md:grid-cols-2" x-data="{periodPreset:@js(old('period_preset','custom'))}">@csrf @method('PUT')
+            <label><span class="gpha-label">Report Type <span class="text-red-600">*</span></span><select name="type" class="gpha-input" required><option value="mileage" @selected(old('type',$report->type)==='mileage')>Ambulance Mileage Report</option><option value="weekly_activity" @selected(old('type',$report->type)==='weekly_activity')>Operational Activities Report</option><option value="availability" @selected(old('type',$report->type)==='availability')>Radio & Availability Report</option></select></label>
+            <label><span class="gpha-label">Reporting Period <span class="text-red-600">*</span></span><select name="period_preset" x-model="periodPreset" class="gpha-input" required><option value="today">Today</option><option value="yesterday">Yesterday</option><option value="this_week">This Week</option><option value="last_week">Last Week</option><option value="this_month">This Month</option><option value="last_month">Last Month</option><option value="this_quarter">This Quarter</option><option value="last_quarter">Last Quarter</option><option value="last_six_months">Last 6 Months</option><option value="this_year">This Year</option><option value="last_year">Last Year</option><option value="custom">Custom Dates</option></select></label>
+            <label x-show="periodPreset==='custom'"><span class="gpha-label">From Date <span class="text-red-600">*</span></span><input type="date" name="period_start" value="{{ old('period_start',$report->period_start->toDateString()) }}" :disabled="periodPreset!=='custom'" :required="periodPreset==='custom'" class="gpha-input"></label>
+            <label x-show="periodPreset==='custom'"><span class="gpha-label">To Date <span class="text-red-600">*</span></span><input type="date" name="period_end" value="{{ old('period_end',$report->period_end->toDateString()) }}" :disabled="periodPreset!=='custom'" :required="periodPreset==='custom'" class="gpha-input"></label>
+            <div class="flex justify-end gap-2 md:col-span-2"><a href="{{ route('ems.reports') }}" class="gpha-button-secondary">Cancel</a><button class="gpha-button-primary">Regenerate Report</button></div>
+        </form>
+    </section>
+</div>
+</x-app-layout>

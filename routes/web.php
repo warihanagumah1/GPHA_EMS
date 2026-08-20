@@ -1,8 +1,13 @@
 <?php
-use App\Application\Sso\CentralLoginUrl;use App\Http\Controllers\EmsOperationsController;use App\Http\Controllers\Sso\SsoLoginController;use Illuminate\Http\Request;use Illuminate\Support\Facades\Route;
+use App\Application\Sso\CentralLoginUrl;use App\Http\Controllers\EmsOperationsController;use App\Http\Controllers\EmsSettingsController;use App\Http\Controllers\Sso\SsoLoginController;use Illuminate\Http\Request;use Illuminate\Support\Facades\Route;
 Route::get('/',function(Request $request){if($request->filled('token'))return redirect()->route('sso.login',['token'=>$request->query('token')]);if(app()->environment('testing')&&!auth()->check())return view('welcome');return auth()->check()?redirect()->route('dashboard'):redirect()->away(app(CentralLoginUrl::class)->loginUrl());})->name('home');
 Route::get('/sso/login',SsoLoginController::class)->name('sso.login');Route::get('/sso/consume',SsoLoginController::class)->name('sso.consume');
 Route::get('/api/runtime-config',fn()=>response()->json(['centralLoginUrl'=>config('gpha_sso.central_login_url'),'ssoReturnUrl'=>app(CentralLoginUrl::class)->returnUrl()]))->name('runtime-config');
+Route::middleware('signed')->prefix('report-approval')->group(function(){
+ Route::get('/{report:uuid}',[EmsOperationsController::class,'guestApproval'])->name('ems.reports.guest-approval');
+ Route::patch('/{report:uuid}',[EmsOperationsController::class,'guestApproveReport'])->name('ems.reports.guest-approve');
+ Route::get('/{report:uuid}/files/{file}',[EmsOperationsController::class,'guestReportFile'])->whereIn('file',['submitter-signature','approver-signature','signed-report'])->name('ems.reports.guest-file');
+});
 Route::middleware(['auth','ems.access'])->group(function(){
  Route::post('/branch',function(Request $request){$code=$request->validate(['branch_code'=>'required|string|max:40'])['branch_code'];abort_unless(in_array($code,(array)session('sso.branches.codes',[]),true),403);session(['sso.active_branch_code'=>$code]);return back();})->name('ems.branch.switch');
  Route::get('/dashboard',[EmsOperationsController::class,'dashboard'])->name('dashboard');
@@ -30,8 +35,6 @@ Route::middleware(['auth','ems.access'])->group(function(){
  Route::put('/operations/mileage/{reading}',[EmsOperationsController::class,'updateMileage'])->middleware('ems.permission:AmbulanceFleet,Manage')->name('ems.mileage.update');
  Route::delete('/operations/mileage/{reading}',[EmsOperationsController::class,'destroyMileage'])->middleware('ems.permission:AmbulanceFleet,Manage')->name('ems.mileage.destroy');
  Route::post('/availability',[EmsOperationsController::class,'storeAvailability'])->middleware('ems.permission:ReadinessAndActivities,Manage')->name('ems.availability.store');
- Route::post('/operations/availability/units',[EmsOperationsController::class,'storeAvailabilityUnit'])->middleware('ems.permission:ReadinessAndActivities,Manage')->name('ems.availability.units.store');
- Route::delete('/operations/availability/units/{availabilityUnit}',[EmsOperationsController::class,'destroyAvailabilityUnit'])->middleware('ems.permission:ReadinessAndActivities,Manage')->name('ems.availability.units.destroy');
  Route::get('/operations/availability/sessions/{session}',[EmsOperationsController::class,'showAvailabilitySession'])->middleware('ems.permission:ReadinessAndActivities,View')->name('ems.availability.sessions.show');
  Route::get('/operations/availability/sessions/{session}/edit',[EmsOperationsController::class,'editAvailabilitySession'])->middleware('ems.permission:ReadinessAndActivities,Manage')->name('ems.availability.sessions.edit');
  Route::put('/operations/availability/sessions/{session}',[EmsOperationsController::class,'updateAvailabilitySession'])->middleware('ems.permission:ReadinessAndActivities,Manage')->name('ems.availability.sessions.update');
@@ -45,9 +48,22 @@ Route::middleware(['auth','ems.access'])->group(function(){
  Route::get('/reports/export/operations',[EmsOperationsController::class,'exportOperationsReport'])->middleware('ems.permission:EMSReports,Export')->name('ems.reports.operations.export');
  Route::post('/reports',[EmsOperationsController::class,'generateReport'])->middleware('ems.permission:EMSReports,Manage')->name('ems.reports.store');
  Route::get('/reports/{report:uuid}/print',[EmsOperationsController::class,'printReport'])->middleware('ems.permission:EMSReports,View')->name('ems.reports.print');
+ Route::get('/reports/{report:uuid}/edit',[EmsOperationsController::class,'editReport'])->middleware('ems.permission:EMSReports,Manage')->name('ems.reports.edit');
+ Route::put('/reports/{report:uuid}',[EmsOperationsController::class,'updateReport'])->middleware('ems.permission:EMSReports,Manage')->name('ems.reports.update');
+ Route::delete('/reports/{report:uuid}',[EmsOperationsController::class,'destroyReport'])->middleware('ems.permission:EMSReports,Manage')->name('ems.reports.destroy');
+ Route::post('/reports/{report:uuid}/submit',[EmsOperationsController::class,'submitReport'])->middleware('ems.permission:EMSReports,Manage')->name('ems.reports.submit');
  Route::patch('/reports/{report:uuid}/approve',[EmsOperationsController::class,'approveReport'])->middleware('ems.permission:EMSReports,Approve')->name('ems.reports.approve');
- Route::get('/reports/{report:uuid}/export',[EmsOperationsController::class,'exportReport'])->middleware('ems.permission:EMSReports,Export')->name('ems.reports.export');
+ Route::get('/reports/{report:uuid}/files/{file}',[EmsOperationsController::class,'reportFile'])->middleware('ems.permission:EMSReports,View')->whereIn('file',['submitter-signature','approver-signature','signed-report'])->name('ems.reports.file');
  Route::get('/audit',[EmsOperationsController::class,'audit'])->middleware('ems.permission:EMSActivityAndAudit,View')->name('ems.audit');
  Route::get('/audit/export',[EmsOperationsController::class,'exportAudit'])->middleware('ems.permission:EMSActivityAndAudit,Export')->name('ems.audit.export');
+ Route::middleware('ems.permission:EMSSettings,Manage')->prefix('settings')->group(function(){
+  Route::get('/',[EmsSettingsController::class,'index'])->name('ems.settings');
+  Route::post('/locations',[EmsSettingsController::class,'storeLocation'])->name('ems.settings.locations.store');
+  Route::put('/locations/{location}',[EmsSettingsController::class,'updateLocation'])->name('ems.settings.locations.update');
+  Route::patch('/locations/{location}/status',[EmsSettingsController::class,'setLocationStatus'])->name('ems.settings.locations.status');
+  Route::post('/units',[EmsSettingsController::class,'storeUnit'])->name('ems.settings.units.store');
+  Route::put('/units/{availabilityUnit}',[EmsSettingsController::class,'updateUnit'])->name('ems.settings.units.update');
+  Route::patch('/units/{availabilityUnit}/status',[EmsSettingsController::class,'setUnitStatus'])->name('ems.settings.units.status');
+ });
 });
 if(app()->environment('testing')){Route::view('/profile','profile')->middleware('auth')->name('profile');require __DIR__.'/auth.php';}
