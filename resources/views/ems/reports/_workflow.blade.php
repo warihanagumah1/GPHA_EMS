@@ -22,10 +22,17 @@
                     <td><span class="font-extrabold">{{ $report->preparedBy?->job_title?:'SAEMT' }}</span><br>{{ $report->preparedBy?->name??'EMS Report Officer' }}</td>
                     <td>@if($report->submitted_at)<span class="font-bold">{{ $report->submittedBy?->name??$report->preparedBy?->name }}</span><br>{{ $report->submitted_at->format('d M Y, H:i') }}@else<span class="text-slate-400">Not submitted</span>@endif</td>
                     <td>@if($report->approved_at)<span class="font-bold">{{ $report->approvedBy?->name??'EMS Manager' }}</span><br>{{ $report->approved_at->format('d M Y, H:i') }}@else<span class="text-slate-400">Not approved</span>@endif</td>
-                    <td class="gpha-actions-cell"><div class="relative inline-block text-left" x-data="{open:false,menuTop:0,menuLeft:0,positionMenu(){const r=this.$refs.trigger.getBoundingClientRect(),w=224,h=230,p=8;this.menuTop=Math.max(p,Math.min(r.top,window.innerHeight-h-p));this.menuLeft=r.right+p+w<=window.innerWidth-p?r.right+p:Math.max(p,r.left-w-p)}}" @resize.window="open&&positionMenu()" @scroll.window="open&&positionMenu()" @keydown.escape.window="open=false"><x-ems.action-trigger x-ref="trigger" x-bind:class="{'is-open':open}" @click.stop="positionMenu();open=!open" label="Report actions" /><div x-cloak x-show="open" x-transition @click.outside="open=false" :style="`top:${menuTop}px;left:${menuLeft}px`" class="gpha-floating-action-menu">
+                    <td class="gpha-actions-cell"><div class="relative inline-block text-left" x-data="{open:false,menuTop:0,menuLeft:0,positionMenu(){const r=this.$refs.trigger.getBoundingClientRect(),w=224,h=420,p=8;this.menuTop=Math.max(p,Math.min(r.top,window.innerHeight-h-p));this.menuLeft=r.right+p+w<=window.innerWidth-p?r.right+p:Math.max(p,r.left-w-p)}}" @resize.window="open&&positionMenu()" @scroll.window="open&&positionMenu()" @keydown.escape.window="open=false"><x-ems.action-trigger x-ref="trigger" x-bind:class="{'is-open':open}" @click.stop="positionMenu();open=!open" label="Report actions" /><div x-cloak x-show="open" x-transition @click.outside="open=false" :style="`top:${menuTop}px;left:${menuLeft}px`" class="gpha-floating-action-menu">
                         @if($report->status==='draft'&&$isPreparer&&$canManage)<a href="{{ route('ems.reports.print',$report) }}" class="block w-full px-4 py-2 text-left font-semibold text-emerald-700 hover:bg-emerald-50">Review &amp; Sign</a>@elseif($report->status==='submitted'&&$canApprove)<a href="{{ route('ems.reports.print',$report) }}" class="block w-full px-4 py-2 text-left font-semibold text-emerald-700 hover:bg-emerald-50">Review &amp; Approve</a>@else<a href="{{ route('ems.reports.print',$report) }}" class="block w-full px-4 py-2 text-left font-semibold text-emerald-700 hover:bg-emerald-50">View Report</a>@endif
                         <a href="{{ route('ems.reports.print',['report'=>$report,'print'=>1]) }}" target="_blank" rel="noopener" class="block w-full px-4 py-2 text-left font-semibold text-slate-700 hover:bg-slate-50">Print / Download PDF</a>
                         @if($report->signed_report_path)<a href="{{ route('ems.reports.file',[$report,'signed-report']) }}" class="block w-full px-4 py-2 text-left font-semibold text-slate-700 hover:bg-slate-50">Download Signed PDF</a>@endif
+                        @if($report->status==='submitted'&&!empty($approvalRecipientsByReport[$report->id]))
+                            <form method="POST" action="{{ route('ems.reports.resend-approval-email',$report) }}">@csrf<button type="submit" @click="open=false" class="block min-h-0 w-full px-4 py-2 text-left font-semibold text-gpha-primary hover:bg-blue-50">Resend Approval Email</button></form>
+                            @foreach($approvalRecipientsByReport[$report->id] as $approvalRecipient)
+                                @php($copyLabel=count($approvalRecipientsByReport[$report->id])>1?'Copy Link — '.$approvalRecipient['name']:'Copy Approval Link')
+                                <button type="button" x-data="{copied:false,copying:false}" data-create-url="{{ route('ems.reports.create-approval-link',$report) }}" data-approver="{{ $approvalRecipient['email'] }}" @click="copying=true;createAndCopyEmsApprovalLink($el.dataset.createUrl,$el.dataset.approver).then(()=>{copied=true;setTimeout(()=>copied=false,2000)}).catch(error=>alert(error.message)).finally(()=>copying=false)" class="block min-h-0 w-full px-4 py-2 text-left font-semibold text-slate-700 hover:bg-slate-50"><span x-text="copying?'Creating Link…':(copied?'Link Copied':@js($copyLabel))">{{ $copyLabel }}</span></button>
+                            @endforeach
+                        @endif
                         @if($isMutable&&$isPreparer&&$canManage)<a href="{{ route('ems.reports.edit',$report) }}" class="block w-full px-4 py-2 text-left font-semibold text-gpha-primary hover:bg-blue-50">Edit</a><form method="POST" action="{{ route('ems.reports.destroy',$report) }}" data-confirm-title="Delete Report?" data-confirm-message="This {{ str($report->status)->headline() }} report and its signatures will be permanently deleted." data-confirm-label="Yes, Delete Report" data-confirm-tone="danger">@csrf @method('DELETE')<button type="submit" @click="open=false" class="block min-h-0 w-full px-4 py-2 text-left font-semibold text-red-600 hover:bg-red-50">Delete</button></form>@endif
                     </div></div></td>
                 </tr>
@@ -35,3 +42,15 @@
     </div>
     @if($reports->hasPages())<div class="border-t border-slate-200 p-4">{{ $reports->links() }}</div>@endif
 </section>
+<script>
+window.copyEmsApprovalLink=window.copyEmsApprovalLink||async function(url){
+    if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(url);return;}
+    const input=document.createElement('textarea');input.value=url;input.style.position='fixed';input.style.opacity='0';document.body.appendChild(input);input.select();document.execCommand('copy');input.remove();
+};
+window.createAndCopyEmsApprovalLink=window.createAndCopyEmsApprovalLink||async function(createUrl,approver){
+    const response=await fetch(createUrl,{method:'POST',headers:{'Accept':'application/json','Content-Type':'application/json','X-CSRF-TOKEN':document.querySelector('meta[name="csrf-token"]').content},body:JSON.stringify({approver})});
+    const result=await response.json().catch(()=>({}));
+    if(!response.ok)throw new Error(result.message||'The short approval link could not be created.');
+    await window.copyEmsApprovalLink(result.url);
+};
+</script>

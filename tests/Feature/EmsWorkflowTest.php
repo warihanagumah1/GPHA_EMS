@@ -593,7 +593,7 @@ class EmsWorkflowTest extends TestCase
             ->assertDontSee('Movement volume handled by the selected ambulance.');
     }
 
-    public function test_dashboard_displays_the_current_users_normalized_permission_dump(): void
+    public function test_dashboard_does_not_display_the_temporary_permission_dump(): void
     {
         $user = User::factory()->create();
         $permissions = [
@@ -603,11 +603,9 @@ class EmsWorkflowTest extends TestCase
 
         $this->actingAs($user)->withSession(['sso.permissions' => $permissions])->get(route('dashboard'))
             ->assertOk()
-            ->assertSee('data-user-permissions', false)
-            ->assertSee('Current User Permissions')
-            ->assertSee('&quot;emsreports&quot;', false)
-            ->assertSee('&quot;manage&quot;', false)
-            ->assertDontSee('&quot;approve&quot;', false);
+            ->assertDontSee('data-user-permissions', false)
+            ->assertDontSee('Current User Permissions')
+            ->assertDontSee('&quot;emsreports&quot;', false);
     }
 
     public function test_movement_list_can_be_filtered_by_operational_fields(): void
@@ -997,7 +995,7 @@ class EmsWorkflowTest extends TestCase
                 ->assertSee('Summary of Findings')
                 ->assertSee('Recommendations')
                 ->assertSee('Print / Save PDF')
-                ->assertSeeInOrder(['EMS Report Officer', 'EMS Officer', 'Prepared:'])
+                ->assertSeeInOrder(['EMS Officer', 'EMS Report Officer', 'Prepared:'])
                 ->assertSee('Sign and Submit Report')
                 ->assertSee('.table-wrap table{border:1px solid #7e95b4}',false)
                 ->assertSee('class="print-table-footer"',false)
@@ -1084,6 +1082,30 @@ class EmsWorkflowTest extends TestCase
         Mail::assertSent(ReportReadyForApproval::class, 2);
         Mail::assertSent(ReportReadyForApproval::class, fn (ReportReadyForApproval $mail) => $mail->hasTo('ama.mensah@ghanaports.gov.gh') && str_contains($mail->render(), 'Dear Dr. Ama Mensah,'));
 
+        $this->actingAs($submitter)->get(route('ems.reports'))
+            ->assertOk()
+            ->assertSee('Resend Approval Email')
+            ->assertSee('Copy Link — Dr. Emile')
+            ->assertSee('Copy Link — Dr. Ama Mensah');
+        $shortLinkResponse = $this->actingAs($submitter)->postJson(route('ems.reports.create-approval-link', $report), [
+            'approver' => 'emasiedu@ghanaports.gov.gov.gh',
+        ])->assertOk();
+        $shortApprovalUrl = $shortLinkResponse->json('url');
+        $this->assertStringContainsString('/a/', $shortApprovalUrl);
+        $this->assertStringNotContainsString('signature=', $shortApprovalUrl);
+        $this->assertDatabaseHas('ems_report_approval_links', [
+            'report_id' => $report->id,
+            'approver_email' => 'emasiedu@ghanaports.gov.gov.gh',
+        ]);
+        $longApprovalRedirect = $this->get($shortApprovalUrl)->assertRedirect()->headers->get('Location');
+        $this->assertNotNull($longApprovalRedirect);
+        $this->assertTrue(URL::hasValidRelativeSignature(\Illuminate\Http\Request::create($longApprovalRedirect)));
+        $this->get($longApprovalRedirect)->assertOk()->assertSee('Approve Report');
+        $this->actingAs($submitter)->post(route('ems.reports.resend-approval-email', $report))
+            ->assertRedirect()
+            ->assertSessionHas('success', 'Approval email resent to 2 approvers.');
+        Mail::assertSent(ReportReadyForApproval::class, 4);
+
         $uploadedSignature = UploadedFile::fake()->createWithContent('director-signature.png', base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='));
         $this->actingAs($approver)->withSession(['sso.permissions' => ['emsreports' => ['view', 'approve']]])->patch(route('ems.reports.approve', $report), [
             'signature_file' => $uploadedSignature,
@@ -1099,8 +1121,8 @@ class EmsWorkflowTest extends TestCase
 
         $this->actingAs($approver)->get(route('ems.reports.print', $report))
             ->assertOk()
-            ->assertSeeInOrder(['Warihana Gumah', 'SAEMT'])
-            ->assertSeeInOrder(['EMS Director', 'Director, Medical Services'])
+            ->assertSeeInOrder(['SAEMT', 'Warihana Gumah'])
+            ->assertSeeInOrder(['Director, Medical Services', 'EMS Director'])
             ->assertSee('Approved')
             ->assertDontSee('Approve Report');
         $this->actingAs($approver)->get(route('ems.reports.file', [$report, 'approver-signature']))->assertOk();

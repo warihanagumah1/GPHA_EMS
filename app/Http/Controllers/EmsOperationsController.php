@@ -10,12 +10,14 @@ use App\Models\AvailabilityCheck;
 use App\Models\AvailabilityUnit;
 use App\Models\Dispatch;
 use App\Models\EmsReport;
+use App\Models\EmsReportApprovalLink;
 use App\Models\EmsAuditLog;
 use App\Models\MileageReading;
 use App\Models\Location;
 use App\Models\WeeklyActivity;
 use App\Support\RichText;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -533,6 +535,16 @@ class EmsOperationsController extends Controller
             ->latest('created_at')
             ->paginate(15)
             ->withQueryString();
+        $testingAccess = app()->environment('testing') && !auth()->user()?->sso_user_id;
+        $canShareApproval = $testingAccess || $approverTabs || app(PermissionService::class)->allows('EMSReports', 'Manage');
+        $approvalRecipientsByReport = [];
+        if ($canShareApproval) {
+            $approvers = $this->reportApprovers();
+            foreach ($reports->getCollection()->where('status', 'submitted') as $report) {
+                if (!$testingAccess && !$approverTabs && (int) $report->prepared_by !== (int) auth()->id()) continue;
+                $approvalRecipientsByReport[$report->id] = $approvers;
+            }
+        }
         [$periodStart, $periodEnd] = $this->reportPeriodDates(['period_preset' => 'this_week']);
 
         return view('ems.reports.dashboard', [
@@ -540,6 +552,7 @@ class EmsOperationsController extends Controller
             'reportFilters' => $reportFilters,
             'approverTabs' => $approverTabs,
             'activeReportTab' => $activeReportTab,
+            'approvalRecipientsByReport' => $approvalRecipientsByReport,
             'generationPeriod' => ['period_start' => $periodStart, 'period_end' => $periodEnd],
         ]);
     }
@@ -657,6 +670,70 @@ class EmsOperationsController extends Controller
         return redirect()->route('ems.reports.print', $report)->with('success', 'Report signed and submitted for approval.');
     }
 
+    public function resendReportApprovalEmail(EmsReport $report): RedirectResponse
+    {
+        abort_unless($report->status === 'submitted', 422, 'Only submitted reports can be shared for approval.');
+        $this->ensureReportCanBeShared($report);
+
+        $delivery = $this->sendReportApprovalEmail($report->fresh(['preparedBy','submittedBy']));
+        if ($delivery['sent'] === 0) {
+            return back()->withErrors(['approval_email' => $delivery['failed'] > 0
+                ? 'The approval email could not be delivered. Please check the mail configuration and application log, then try again.'
+                : 'No valid report approver email addresses are configured.']);
+        }
+
+        $message = 'Approval email resent to '.$delivery['sent'].' '.str('approver')->plural($delivery['sent']).'.';
+        if ($delivery['failed'] > 0) {
+            return back()->with('success', $message)->withErrors([
+                'approval_email' => $delivery['failed'].' '.str('delivery')->plural($delivery['failed']).' failed. Check the application log for details.',
+            ]);
+        }
+
+        return back()->with('success', $message);
+    }
+
+    public function createShortApprovalLink(Request $request, EmsReport $report): JsonResponse
+    {
+        abort_unless($report->status === 'submitted', 422, 'Only submitted reports can be shared for approval.');
+        $this->ensureReportCanBeShared($report);
+        $data = $request->validate(['approver' => ['required', 'email']]);
+        $approver = $this->reportApprover($data['approver']);
+        $token = Str::random(32);
+        $expiresAt = now()->addHours(max(1, (int) config('ems.report_approval_link_hours', 72)));
+
+        EmsReportApprovalLink::where('expires_at', '<', now())->delete();
+        EmsReportApprovalLink::create([
+            'report_id' => $report->id,
+            'token_hash' => hash('sha256', $token),
+            'approver_name' => $approver['name'],
+            'approver_email' => $approver['email'],
+            'expires_at' => $expiresAt,
+        ]);
+
+        $path = route('ems.reports.short-approval', ['token' => $token], false);
+
+        return response()->json([
+            'url' => rtrim((string) config('app.url'), '/').'/'.ltrim($path, '/'),
+            'expires_at' => $expiresAt->format('d M Y, H:i'),
+        ]);
+    }
+
+    public function shortApproval(string $token): RedirectResponse
+    {
+        $approvalLink = EmsReportApprovalLink::with('report')
+            ->where('token_hash', hash('sha256', $token))
+            ->firstOrFail();
+        abort_if($approvalLink->expires_at->isPast(), 403, 'This approval link has expired.');
+        abort_unless($approvalLink->report && in_array($approvalLink->report->status, ['submitted', 'approved'], true), 404);
+
+        return redirect($this->temporaryReportUrl(
+            'ems.reports.guest-approval',
+            $approvalLink->report,
+            ['approver' => $approvalLink->approver_email],
+            $approvalLink->expires_at,
+        ));
+    }
+
     public function approveReport(Request $request, EmsReport $report): RedirectResponse
     {
         abort_unless(
@@ -729,16 +806,26 @@ class EmsOperationsController extends Controller
         return Storage::disk('local')->response($this->normalizedSignaturePath($path));
     }
 
-    private function temporaryReportUrl(string $route, EmsReport $report, array $parameters = []): string
+    private function temporaryReportUrl(string $route, EmsReport $report, array $parameters = [], ?\DateTimeInterface $expiresAt = null): string
     {
         $signedPath = URL::temporarySignedRoute(
             $route,
-            now()->addHours((int) config('ems.report_approval_link_hours', 72)),
+            $expiresAt ?? now()->addHours((int) config('ems.report_approval_link_hours', 72)),
             ['report' => $report, ...$parameters],
             absolute: false,
         );
 
         return rtrim((string) config('app.url'), '/').'/'.ltrim($signedPath, '/');
+    }
+
+    private function ensureReportCanBeShared(EmsReport $report): void
+    {
+        $permissions = app(PermissionService::class);
+        $testingAccess = app()->environment('testing') && !auth()->user()?->sso_user_id;
+        $canApprove = $permissions->allows('EMSReports', 'Approve');
+        $canManageOwnReport = (int) $report->prepared_by === (int) auth()->id()
+            && $permissions->allows('EMSReports', 'Manage');
+        abort_unless($testingAccess || $canApprove || $canManageOwnReport, 403, 'You do not have permission to share this report for approval.');
     }
 
     private function storeReportSignature(Request $request, EmsReport $report, string $party): array
@@ -863,18 +950,22 @@ class EmsOperationsController extends Controller
         return $path;
     }
 
-    private function sendReportApprovalEmail(EmsReport $report): void
+    private function sendReportApprovalEmail(EmsReport $report): array
     {
         $approvers = $this->reportApprovers();
         if ($approvers === []) {
             Log::error('No valid EMS report approval email addresses are configured.');
-            return;
+            return ['sent' => 0, 'failed' => 0];
         }
 
+        $sent = 0;
+        $failed = 0;
         foreach ($approvers as $approver) {
             try {
                 Mail::to($approver['email'])->send(new ReportReadyForApproval($report, $approver['name'], $approver['email']));
+                $sent++;
             } catch (Throwable $exception) {
+                $failed++;
                 Log::error('EMS report approval email could not be sent.', [
                     'report_uuid' => $report->uuid,
                     'recipient' => $approver['email'],
@@ -882,6 +973,8 @@ class EmsOperationsController extends Controller
                 ]);
             }
         }
+
+        return ['sent' => $sent, 'failed' => $failed];
     }
 
     private function reportApprover(?string $email = null): array

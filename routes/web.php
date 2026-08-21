@@ -3,6 +3,7 @@ use App\Application\Sso\CentralLoginUrl;use App\Http\Controllers\EmsOperationsCo
 Route::get('/',function(Request $request){if($request->filled('token'))return redirect()->route('sso.login',['token'=>$request->query('token')]);if(app()->environment('testing')&&!auth()->check())return view('welcome');return auth()->check()?redirect()->route('dashboard'):redirect()->away(app(CentralLoginUrl::class)->loginUrl());})->name('home');
 Route::get('/sso/login',SsoLoginController::class)->name('sso.login');Route::get('/sso/consume',SsoLoginController::class)->name('sso.consume');
 Route::get('/api/runtime-config',fn()=>response()->json(['centralLoginUrl'=>config('gpha_sso.central_login_url'),'ssoReturnUrl'=>app(CentralLoginUrl::class)->returnUrl()]))->name('runtime-config');
+Route::get('/a/{token}',[EmsOperationsController::class,'shortApproval'])->where('token','[A-Za-z0-9]{32}')->name('ems.reports.short-approval');
 Route::middleware('signed:relative')->prefix('report-approval')->group(function(){
  Route::get('/{report:uuid}',[EmsOperationsController::class,'guestApproval'])->name('ems.reports.guest-approval');
  Route::patch('/{report:uuid}',[EmsOperationsController::class,'guestApproveReport'])->name('ems.reports.guest-approve');
@@ -52,6 +53,8 @@ Route::middleware(['auth','ems.access'])->group(function(){
  Route::put('/reports/{report:uuid}',[EmsOperationsController::class,'updateReport'])->middleware('ems.permission:EMSReports,Manage')->name('ems.reports.update');
  Route::delete('/reports/{report:uuid}',[EmsOperationsController::class,'destroyReport'])->middleware('ems.permission:EMSReports,Manage')->name('ems.reports.destroy');
  Route::post('/reports/{report:uuid}/submit',[EmsOperationsController::class,'submitReport'])->middleware('ems.permission:EMSReports,Manage')->name('ems.reports.submit');
+ Route::post('/reports/{report:uuid}/resend-approval-email',[EmsOperationsController::class,'resendReportApprovalEmail'])->name('ems.reports.resend-approval-email');
+ Route::post('/reports/{report:uuid}/approval-link',[EmsOperationsController::class,'createShortApprovalLink'])->name('ems.reports.create-approval-link');
  Route::patch('/reports/{report:uuid}/approve',[EmsOperationsController::class,'approveReport'])->middleware('ems.permission:EMSReports,Approve')->name('ems.reports.approve');
  Route::get('/reports/{report:uuid}/files/{file}',[EmsOperationsController::class,'reportFile'])->middleware('ems.permission:EMSReports,View')->whereIn('file',['submitter-signature','approver-signature','signed-report'])->name('ems.reports.file');
  Route::get('/audit',[EmsOperationsController::class,'audit'])->middleware('ems.permission:EMSActivityAndAudit,View')->name('ems.audit');
